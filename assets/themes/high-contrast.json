@@ -1,0 +1,131 @@
+{
+  "name": "High Contrast",
+  "ui": {
+    "fg": "FFFFFF",
+    "bg": "000000",
+    "current_line_bg": "1A1A1A",
+    "selection_bg": "1F4FA0",
+    "caret": "FFFF00",
+    "line_number_fg": "C0C0C0",
+    "line_number_bg": "000000",
+    "bookmark_margin_bg": "0A0A0A",
+    "fold_margin_bg": "000000",
+    "fold_fg": "C0C0C0",
+    "fold_bg": "000000",
+    "indent_guide": "5A5A5A",
+    "brace_fg": "FFFF00",
+    "bad_brace_fg": "FF3030",
+    "whitespace": "6A6A6A",
+    "smart_highlight": "00503C",
+    "find_mark": "5A4A00",
+    "mark_1": "005A72",
+    "mark_2": "7A3A00",
+    "mark_3": "5A5600",
+    "mark_4": "4A1F80",
+    "mark_5": "7A0A3A",
+    "incremental": "0040A8",
+    "edge": "808080",
+    "change_modified": "FF9900",
+    "change_saved": "00E060",
+    "active_tab_indicator": "FFFF00"
+  },
+  "tokens": {
+    "default": {
+      "fg": "FFFFFF"
+    },
+    "comment": {
+      "fg": "8CF58C",
+      "italic": true
+    },
+    "comment_line": {
+      "fg": "8CF58C",
+      "italic": true
+    },
+    "comment_doc": {
+      "fg": "A8FFA8",
+      "italic": true
+    },
+    "number": {
+      "fg": "FFB000"
+    },
+    "string": {
+      "fg": "FFF35C"
+    },
+    "char": {
+      "fg": "FFF35C"
+    },
+    "operator": {
+      "fg": "FFFFFF"
+    },
+    "preprocessor": {
+      "fg": "FF8CC6"
+    },
+    "variable": {
+      "fg": "FF9CFF"
+    },
+    "tag": {
+      "fg": "5CC8FF"
+    },
+    "attribute": {
+      "fg": "FFB000"
+    },
+    "attr_value": {
+      "fg": "FFF35C"
+    },
+    "entity": {
+      "fg": "FF9CFF"
+    },
+    "section": {
+      "fg": "5CC8FF",
+      "bold": true
+    },
+    "key": {
+      "fg": "00FFD0"
+    },
+    "assign": {
+      "fg": "FFFFFF"
+    },
+    "diff_add": {
+      "fg": "66FF66"
+    },
+    "diff_del": {
+      "fg": "FF7070"
+    },
+    "diff_header": {
+      "fg": "5CC8FF",
+      "bold": true
+    },
+    "diff_position": {
+      "fg": "FF9CFF"
+    },
+    "heading": {
+      "fg": "5CC8FF",
+      "bold": true
+    },
+    "emphasis": {
+      "fg": "FFFFFF",
+      "italic": true
+    },
+    "code": {
+      "fg": "FFF35C"
+    },
+    "link": {
+      "fg": "00FFD0",
+      "underline": true
+    },
+    "keyword": {
+      "fg": "5CC8FF",
+      "bold": true
+    },
+    "type": {
+      "fg": "00FFD0"
+    },
+    "builtin": {
+      "fg": "FF9CFF"
+    },
+    "constant": {
+      "fg": "FFB000",
+      "bold": true
+    }
+  }
+}

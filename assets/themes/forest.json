@@ -1,0 +1,131 @@
+{
+  "name": "Forest",
+  "ui": {
+    "fg": "D3D8CC",
+    "bg": "1E2620",
+    "current_line_bg": "263029",
+    "selection_bg": "3A4C3F",
+    "caret": "E6EAD8",
+    "line_number_fg": "6B7A6B",
+    "line_number_bg": "1B221D",
+    "bookmark_margin_bg": "19201B",
+    "fold_margin_bg": "1B221D",
+    "fold_fg": "6B7A6B",
+    "fold_bg": "1E2620",
+    "indent_guide": "324036",
+    "brace_fg": "F0D27A",
+    "bad_brace_fg": "F06A5A",
+    "whitespace": "3E4C42",
+    "smart_highlight": "34502E",
+    "find_mark": "574C1E",
+    "mark_1": "1E4A4A",
+    "mark_2": "5E3E22",
+    "mark_3": "4E4C1C",
+    "mark_4": "43344E",
+    "mark_5": "5A2C2C",
+    "incremental": "2A4466",
+    "edge": "324036",
+    "change_modified": "D99A4A",
+    "change_saved": "7FBF5A",
+    "active_tab_indicator": "9CC97A"
+  },
+  "tokens": {
+    "default": {
+      "fg": "D3D8CC"
+    },
+    "comment": {
+      "fg": "80907A",
+      "italic": true
+    },
+    "comment_line": {
+      "fg": "80907A",
+      "italic": true
+    },
+    "comment_doc": {
+      "fg": "8C9C84",
+      "italic": true
+    },
+    "number": {
+      "fg": "E09A6A"
+    },
+    "string": {
+      "fg": "D8C99A"
+    },
+    "char": {
+      "fg": "D8C99A"
+    },
+    "operator": {
+      "fg": "B4BCAC"
+    },
+    "preprocessor": {
+      "fg": "C99BB6"
+    },
+    "variable": {
+      "fg": "C99BB6"
+    },
+    "tag": {
+      "fg": "9CC97A"
+    },
+    "attribute": {
+      "fg": "D9B26F"
+    },
+    "attr_value": {
+      "fg": "D8C99A"
+    },
+    "entity": {
+      "fg": "D9B26F"
+    },
+    "section": {
+      "fg": "9CC97A",
+      "bold": true
+    },
+    "key": {
+      "fg": "7EC4B0"
+    },
+    "assign": {
+      "fg": "B4BCAC"
+    },
+    "diff_add": {
+      "fg": "A6D68A"
+    },
+    "diff_del": {
+      "fg": "EE8F80"
+    },
+    "diff_header": {
+      "fg": "9CC97A",
+      "bold": true
+    },
+    "diff_position": {
+      "fg": "D9B26F"
+    },
+    "heading": {
+      "fg": "9CC97A",
+      "bold": true
+    },
+    "emphasis": {
+      "fg": "D3D8CC",
+      "italic": true
+    },
+    "code": {
+      "fg": "D8C99A"
+    },
+    "link": {
+      "fg": "7EC4B0",
+      "underline": true
+    },
+    "keyword": {
+      "fg": "9CC97A",
+      "bold": true
+    },
+    "type": {
+      "fg": "7EC4B0"
+    },
+    "builtin": {
+      "fg": "D9B26F"
+    },
+    "constant": {
+      "fg": "E09A6A",
+      "bold": true
+    }
+  }
+}

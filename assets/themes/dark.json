@@ -1,0 +1,131 @@
+{
+  "name": "Dark",
+  "ui": {
+    "fg": "D6D7DA",
+    "bg": "25262A",
+    "current_line_bg": "2E3035",
+    "selection_bg": "3C4A62",
+    "caret": "F2F2F2",
+    "line_number_fg": "7A7E86",
+    "line_number_bg": "222327",
+    "bookmark_margin_bg": "202125",
+    "fold_margin_bg": "222327",
+    "fold_fg": "7A7E86",
+    "fold_bg": "25262A",
+    "indent_guide": "3A3C42",
+    "brace_fg": "FFD866",
+    "bad_brace_fg": "FF5A5A",
+    "whitespace": "4A4D55",
+    "smart_highlight": "2E5238",
+    "find_mark": "5E5220",
+    "mark_1": "1F4E5E",
+    "mark_2": "64401F",
+    "mark_3": "55521C",
+    "mark_4": "4A3768",
+    "mark_5": "5E2A3A",
+    "incremental": "2A508A",
+    "edge": "3A3C42",
+    "change_modified": "E0903A",
+    "change_saved": "5DAE5A",
+    "active_tab_indicator": "5B9BF0"
+  },
+  "tokens": {
+    "default": {
+      "fg": "D6D7DA"
+    },
+    "comment": {
+      "fg": "7E9B76",
+      "italic": true
+    },
+    "comment_line": {
+      "fg": "7E9B76",
+      "italic": true
+    },
+    "comment_doc": {
+      "fg": "8AA882",
+      "italic": true
+    },
+    "number": {
+      "fg": "E8A06A"
+    },
+    "string": {
+      "fg": "E0C08C"
+    },
+    "char": {
+      "fg": "E0C08C"
+    },
+    "operator": {
+      "fg": "B6B9C0"
+    },
+    "preprocessor": {
+      "fg": "E58F9C"
+    },
+    "variable": {
+      "fg": "C59BEA"
+    },
+    "tag": {
+      "fg": "70A8F2"
+    },
+    "attribute": {
+      "fg": "E8A06A"
+    },
+    "attr_value": {
+      "fg": "E0C08C"
+    },
+    "entity": {
+      "fg": "C59BEA"
+    },
+    "section": {
+      "fg": "70A8F2",
+      "bold": true
+    },
+    "key": {
+      "fg": "52C0BE"
+    },
+    "assign": {
+      "fg": "B6B9C0"
+    },
+    "diff_add": {
+      "fg": "8FCB80"
+    },
+    "diff_del": {
+      "fg": "F08C8C"
+    },
+    "diff_header": {
+      "fg": "70A8F2",
+      "bold": true
+    },
+    "diff_position": {
+      "fg": "C59BEA"
+    },
+    "heading": {
+      "fg": "70A8F2",
+      "bold": true
+    },
+    "emphasis": {
+      "fg": "D6D7DA",
+      "italic": true
+    },
+    "code": {
+      "fg": "E0C08C"
+    },
+    "link": {
+      "fg": "52C0BE",
+      "underline": true
+    },
+    "keyword": {
+      "fg": "70A8F2",
+      "bold": true
+    },
+    "type": {
+      "fg": "52C0BE"
+    },
+    "builtin": {
+      "fg": "C59BEA"
+    },
+    "constant": {
+      "fg": "E8A06A",
+      "bold": true
+    }
+  }
+}

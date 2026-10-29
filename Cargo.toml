@@ -1,0 +1,41 @@
+[package]
+name = "superfastnotepad"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "A fast text editor written in pure Rust (Windows + macOS)"
+
+[[bin]]
+name = "superfastnotepad"
+path = "src/main.rs"
+
+[dependencies]
+eframe = { version = "0.37", default-features = false, features = ["glow", "persistence"] }
+egui = "0.37"
+ropey = { version = "1.6", default-features = false, features = ["simd", "cr_lines"] }
+encoding_rs = "0.8"
+chardetng = "1.0"
+fancy-regex = "0.20"
+regex = "1"
+rfd = "0.17"
+roxmltree = "0.21"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+md-5 = "0.11"
+sha1 = "0.11"
+sha2 = "0.11"
+directories = "6"
+chrono = "0.4"
+unicode-width = "0.2"
+walkdir = "2"
+similar = { version = "3", features = ["unicode"] }
+arboard = { version = "3", default-features = false }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+
+[profile.dev.package."*"]
+opt-level = 2
