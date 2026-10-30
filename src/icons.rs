@@ -17,12 +17,8 @@ pub enum Icon {
     Redo,
     Find,
     Replace,
-    SyncV,
-    SyncH,
-    Wrap,
     Highlight,
     AllChars,
-    IndentGuide,
     DocMap,
     DocList,
     FunctionList,
@@ -124,21 +120,50 @@ pub fn draw(p: &Painter, rect: Rect, icon: Icon, fg: Color32) {
                 Stroke::new(2.0, green),
             );
         }
-        Icon::Open | Icon::Folder => {
-            let body = Rect::from_min_max(
-                pos2(r.left(), r.top() + w * 0.25),
-                pos2(r.right(), r.bottom() - w * 0.08),
+        Icon::Open => {
+            // An open folder: the back of the folder with its tab, and the
+            // front flap tilted forward.
+            let back = Rect::from_min_max(
+                pos2(r.left(), r.top() + w * 0.22),
+                pos2(r.right() - w * 0.1, r.bottom() - w * 0.08),
             );
             let tab =
-                Rect::from_min_size(pos2(r.left(), r.top() + w * 0.12), vec2(w * 0.42, w * 0.2));
-            p.rect_filled(tab, CornerRadius::same(1), yellow);
-            p.rect_filled(body, CornerRadius::same(1), yellow);
+                Rect::from_min_size(pos2(r.left(), r.top() + w * 0.1), vec2(w * 0.38, w * 0.2));
+            let dark = Color32::from_rgb(0xd0, 0x98, 0x28);
+            p.rect_filled(tab, CornerRadius::same(1), dark);
+            p.rect_filled(back, CornerRadius::same(1), dark);
             p.rect_stroke(
-                body,
+                back,
                 CornerRadius::same(1),
                 Stroke::new(1.0, fg),
                 StrokeKind::Inside,
             );
+            let flap = vec![
+                pos2(r.left() + w * 0.2, r.top() + w * 0.45),
+                pos2(r.right(), r.top() + w * 0.45),
+                pos2(r.right() - w * 0.18, r.bottom() - w * 0.08),
+                pos2(r.left(), r.bottom() - w * 0.08),
+            ];
+            p.add(Shape::convex_polygon(flap, yellow, Stroke::new(1.0, fg)));
+        }
+        Icon::Folder => {
+            // Two overlapping folders: a workspace of folders.
+            let folder = |o: egui::Vec2, s: f32, fill: Color32| {
+                let tl = r.left_top() + o;
+                let tab = Rect::from_min_size(tl, vec2(s * 0.4, s * 0.2));
+                let body = Rect::from_min_size(tl + vec2(0.0, s * 0.14), vec2(s, s * 0.62));
+                p.rect_filled(tab, CornerRadius::same(1), fill);
+                p.rect_filled(body, CornerRadius::same(1), fill);
+                p.rect_stroke(
+                    body,
+                    CornerRadius::same(1),
+                    Stroke::new(1.0, fg),
+                    StrokeKind::Inside,
+                );
+            };
+            let s = w * 0.78;
+            folder(vec2(0.0, 0.0), s, Color32::from_rgb(0xd0, 0x98, 0x28));
+            folder(vec2(w - s, w * 0.24), s, yellow);
         }
         Icon::Save => floppy(
             p,
@@ -262,47 +287,6 @@ pub fn draw(p: &Painter, rect: Rect, icon: Icon, fg: Color32) {
                 red,
             );
         }
-        Icon::SyncV => {
-            p.line_segment([pos2(c.x - 3.0, r.top()), pos2(c.x - 3.0, r.bottom())], st);
-            p.line_segment([pos2(c.x + 3.0, r.top()), pos2(c.x + 3.0, r.bottom())], st);
-            arrow_head(p, pos2(c.x - 3.0, r.top() - 1.0), vec2(0.0, -1.0), 4.0, fg);
-            arrow_head(
-                p,
-                pos2(c.x + 3.0, r.bottom() + 1.0),
-                vec2(0.0, 1.0),
-                4.0,
-                fg,
-            );
-        }
-        Icon::SyncH => {
-            p.line_segment([pos2(r.left(), c.y - 3.0), pos2(r.right(), c.y - 3.0)], st);
-            p.line_segment([pos2(r.left(), c.y + 3.0), pos2(r.right(), c.y + 3.0)], st);
-            arrow_head(p, pos2(r.right() + 1.0, c.y - 3.0), vec2(1.0, 0.0), 4.0, fg);
-            arrow_head(p, pos2(r.left() - 1.0, c.y + 3.0), vec2(-1.0, 0.0), 4.0, fg);
-        }
-        Icon::Wrap => {
-            p.line_segment(
-                [
-                    pos2(r.left(), r.top() + 2.0),
-                    pos2(r.right(), r.top() + 2.0),
-                ],
-                st,
-            );
-            let pts = vec![
-                pos2(r.left(), c.y),
-                pos2(r.right() - 2.0, c.y),
-                pos2(r.right() - 2.0, r.bottom() - 2.0),
-                pos2(c.x, r.bottom() - 2.0),
-            ];
-            p.add(Shape::line(pts, st));
-            arrow_head(
-                p,
-                pos2(c.x - 3.0, r.bottom() - 2.0),
-                vec2(-1.0, 0.0),
-                4.0,
-                fg,
-            );
-        }
         Icon::Highlight => {
             // Three "lines of code" in different syntax colours.
             let rows = [(blue, 0.55), (green, 0.9), (red, 0.4)];
@@ -323,15 +307,6 @@ pub fn draw(p: &Painter, rect: Rect, icon: Icon, fg: Color32) {
                 egui::FontId::proportional(w * 1.1),
                 fg,
             );
-        }
-        Icon::IndentGuide => {
-            for (i, x) in [r.left() + 2.0, c.x, r.right() - 2.0].iter().enumerate() {
-                let mut y = r.top() + i as f32 * 2.0;
-                while y < r.bottom() {
-                    p.line_segment([pos2(*x, y), pos2(*x, y + 1.5)], Stroke::new(1.0, fg));
-                    y += 3.0;
-                }
-            }
         }
         Icon::DocMap => {
             p.rect_stroke(

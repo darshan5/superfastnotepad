@@ -427,7 +427,7 @@ impl App {
             let mut open_file = None;
             let mut remove = None;
             ui.horizontal(|ui| {
-                ui.strong("Folder as Workspace");
+                ui.strong("Workspace");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.small_button("x").clicked() {
                         self.settings.show_folder_tree = false;

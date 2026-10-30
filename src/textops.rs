@@ -21,6 +21,9 @@ pub enum SortMode {
     LengthDesc,
     Reverse,
     Random,
+    /// Largest first, by the first number on each line (`1,234.5`,
+    /// `$80`, `-3`); lines without a number go last.
+    NumberDesc,
 }
 
 fn leading_number(s: &str, decimal: Option<char>) -> Option<f64> {
@@ -46,6 +49,22 @@ fn leading_number(s: &str, decimal: Option<char>) -> Option<f64> {
         }
     }
     if seen_digit { out.parse().ok() } else { None }
+}
+
+/// The first number anywhere in `s`, ignoring thousands commas.
+fn first_number(s: &str) -> Option<f64> {
+    let b = s.as_bytes();
+    let start = (0..b.len()).find(|&i| {
+        b[i].is_ascii_digit()
+            || (matches!(b[i], b'-' | b'.') && b.get(i + 1).is_some_and(u8::is_ascii_digit))
+    })?;
+    let rest = &s[start..];
+    // `.5` reads as 0.5.
+    if rest.starts_with('.') {
+        leading_number(&format!("0{rest}"), Some('.'))
+    } else {
+        leading_number(rest, Some('.'))
+    }
 }
 
 fn cmp_num(a: Option<f64>, b: Option<f64>) -> Ordering {
@@ -112,6 +131,9 @@ pub fn sort_lines(lines: &mut [String], mode: SortMode) {
             .sort_by(|a, b| cmp_num(leading_number(b, Some('.')), leading_number(a, Some('.')))),
         SortMode::LengthAsc => lines.sort_by_key(|s| s.chars().count()),
         SortMode::LengthDesc => lines.sort_by_key(|s| std::cmp::Reverse(s.chars().count())),
+        SortMode::NumberDesc => {
+            lines.sort_by_cached_key(|s| std::cmp::Reverse(NumKey(first_number(s))));
+        }
         SortMode::Reverse => lines.reverse(),
         SortMode::Random => {
             let mut rng = Rng::seeded();
@@ -120,6 +142,29 @@ pub fn sort_lines(lines: &mut [String], mode: SortMode) {
                 lines.swap(i, j);
             }
         }
+    }
+}
+
+/// Orders numbers with no number below every number, for sorting keys.
+struct NumKey(Option<f64>);
+
+impl PartialEq for NumKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl Eq for NumKey {}
+
+impl PartialOrd for NumKey {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for NumKey {
+    fn cmp(&self, other: &Self) -> Ordering {
+        cmp_num(self.0, other.0)
     }
 }
 
@@ -500,6 +545,35 @@ mod tests {
         let mut len = v(&["ccc", "a", "bb"]);
         sort_lines(&mut len, SortMode::LengthDesc);
         assert_eq!(len, v(&["ccc", "bb", "a"]));
+    }
+
+    #[test]
+    fn sorts_by_number_largest_first() {
+        let mut l = v(&[
+            "no number here",
+            "9 apples",
+            "total: 1,234.50",
+            "$80",
+            "-3 degrees",
+            "item 12,000",
+            ".5 cup",
+        ]);
+        sort_lines(&mut l, SortMode::NumberDesc);
+        assert_eq!(
+            l,
+            v(&[
+                "item 12,000",
+                "total: 1,234.50",
+                "$80",
+                "9 apples",
+                ".5 cup",
+                "-3 degrees",
+                "no number here",
+            ])
+        );
+        let mut a = v(&["banana", "Apple", "cherry"]);
+        sort_lines(&mut a, SortMode::LexCiAsc);
+        assert_eq!(a, v(&["Apple", "banana", "cherry"]));
     }
 
     #[test]

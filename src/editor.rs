@@ -1552,8 +1552,11 @@ pub fn show(
     };
     // Scrollbar interaction.
     let pointer = ui.input(|i| i.pointer.clone());
+    // Presses over a window in front of the editor (such as Find) are not
+    // for the editor.
+    let on_top = response.contains_pointer();
     if let Some(pp) = pointer.interact_pos() {
-        if pointer.primary_pressed() && vtrack.contains(pp) {
+        if pointer.primary_pressed() && on_top && vtrack.contains(pp) {
             if vthumb.contains(pp) {
                 vs.drag = Some(Drag::VScroll {
                     grab: pp.y - vthumb.min.y,
@@ -1564,6 +1567,7 @@ pub fn show(
             }
         }
         if pointer.primary_pressed()
+            && on_top
             && htrack.contains(pp)
             && let Some(h) = hthumb
         {
@@ -1771,8 +1775,9 @@ pub fn show(
         for (label, cmd) in [
             ("Hide/Show folding: fold current", Command::FoldCurrent),
             ("Unfold current", Command::UnfoldCurrent),
-            ("Open selected file", Command::OpenSelectedFile),
-            ("Search on Internet", Command::SearchOnInternet),
+            ("Open as File", Command::OpenSelectedFile),
+            ("Search on the Web", Command::SearchOnInternet),
+            ("Redact", Command::Redact),
         ] {
             if ui.button(label).clicked() {
                 out.commands.push(cmd);
@@ -2405,8 +2410,9 @@ fn handle_mouse(
     let Some(pp) = pointer.interact_pos() else {
         return;
     };
+    // `contains_pointer` is false when another window is in front.
     if pointer.primary_pressed()
-        && response.rect.contains(pp)
+        && response.contains_pointer()
         && !matches!(vs.drag, Some(Drag::VScroll { .. } | Drag::HScroll { .. }))
     {
         let in_scrollbar = pp.x > text_rect.max.x || pp.y > text_rect.max.y;

@@ -10,11 +10,11 @@ name = "superfastnotepad"
 path = "src/main.rs"
 
 [dependencies]
-eframe = { version = "0.37", default-features = false, features = ["glow"] }
+# `clipboard` connects copy and paste to the system clipboard.
+eframe = { version = "0.37", default-features = false, features = ["glow", "clipboard"] }
 egui = "0.37"
 ropey = { version = "1.6", default-features = false, features = ["simd", "cr_lines"] }
 encoding_rs = "0.8"
-chardetng = "1.0"
 fancy-regex = "0.20"
 regex = "1"
 rfd = "0.17"
@@ -30,10 +30,23 @@ unicode-width = "0.2"
 walkdir = "2"
 similar = { version = "3", features = ["unicode"] }
 arboard = { version = "3", default-features = false }
+# OS secure random numbers for the password generator.
+getrandom = "0.4"
 
 # Receiving files opened from Finder (same version the window library uses).
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
+# Callback for the system color sampler (eyedropper).
+block2 = "0.6"
+
+# Eyedropper: pointer position, key state and screen pixels.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [profile.release]
 opt-level = 3

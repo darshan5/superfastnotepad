@@ -1,0 +1,124 @@
+# Tags a version and drafts a GitHub release with builds for Windows (x64)
+# and macOS (Apple Silicon).
+#
+# Run it from the Actions tab ("Release" > "Run workflow"), optionally with a
+# version; it defaults to the version in Cargo.toml. Pushing a `v*` tag runs
+# it too. The release is left as a draft to review and publish by hand.
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, without the leading v (default: Cargo.toml)"
+        required: false
+        default: ""
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: tag
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            echo "tag=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          version="$INPUT_VERSION"
+          if [ -z "$version" ]; then
+            version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          fi
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$'; then
+            echo "::error::'$version' is not a version like 1.2.3"
+            exit 1
+          fi
+          tag="v$version"
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+            echo "::error::Tag $tag already exists"
+            exit 1
+          fi
+          git tag "$tag"
+          git push origin "$tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: tag
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+            asset: macos-apple-silicon
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset: windows-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.tag.outputs.tag }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Test
+        if: runner.os == 'macOS'
+        run: cargo test --release
+
+      - name: Build the app (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          scripts/bundle-macos.sh ${{ matrix.target }}
+          ditto -c -k --keepParent \
+            target/${{ matrix.target }}/release/superfastnotepad.app \
+            superfastnotepad-${{ needs.tag.outputs.tag }}-${{ matrix.asset }}.zip
+
+      - name: Build the app (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cargo build --release --target ${{ matrix.target }}
+          Compress-Archive -Path target/${{ matrix.target }}/release/superfastnotepad.exe `
+            -DestinationPath superfastnotepad-${{ needs.tag.outputs.tag }}-${{ matrix.asset }}.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: superfastnotepad-*.zip
+
+  release:
+    needs: [tag, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.tag.outputs.tag }}
+          name: superfastnotepad ${{ needs.tag.outputs.tag }}
+          draft: true
+          generate_release_notes: true
+          files: dist/*.zip
+          body: |
+            ## Downloads
+
+            - **macOS (Apple Silicon):** `superfastnotepad-${{ needs.tag.outputs.tag }}-macos-apple-silicon.zip`. Unzip and move `superfastnotepad.app` to Applications.
+            - **Windows (64-bit):** `superfastnotepad-${{ needs.tag.outputs.tag }}-windows-x64.zip`. Unzip and run `superfastnotepad.exe`.
+
+            The builds aren't code-signed. On macOS, the first time, right-click the app and choose Open (or run `xattr -dr com.apple.quarantine /Applications/superfastnotepad.app`). On Windows, choose "More info" > "Run anyway" in the SmartScreen prompt.

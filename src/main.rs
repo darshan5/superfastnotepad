@@ -3,6 +3,7 @@
 
 mod app;
 mod calltip;
+mod colorpick;
 mod commands;
 mod compare;
 mod compare_ui;
@@ -22,6 +23,7 @@ mod langs;
 mod lexer;
 mod ops;
 mod panels;
+mod password;
 mod platform;
 mod search;
 mod textops;
@@ -42,12 +44,17 @@ fn parse_args() -> (StartupArgs, bool, Vec<String>) {
         no_session: false,
         read_only: false,
         always_on_top: false,
+        take: None,
     };
     let mut multi = false;
     let mut args = raw.iter();
     while let Some(arg) = args.next() {
         if let Some(dir) = arg.strip_prefix("--session-dir=") {
             config::set_session_dir(dir.into());
+            continue;
+        }
+        if arg == "--take" {
+            a.take = args.next().map(Into::into);
             continue;
         }
         if arg == "--session-dir" {
@@ -106,6 +113,13 @@ fn setup_fonts(ctx: &egui::Context) -> Result<(), String> {
         fonts.families.insert(fam, vec!["system".into()]);
     }
     ctx.set_fonts(fonts);
+    // Dialog titles use the heading size; the default (18) looks oversized
+    // next to 13 pt body text.
+    ctx.all_styles_mut(|s| {
+        if let Some(f) = s.text_styles.get_mut(&egui::TextStyle::Heading) {
+            f.size = 15.0;
+        }
+    });
     Ok(())
 }
 

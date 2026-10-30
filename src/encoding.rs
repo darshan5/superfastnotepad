@@ -1,9 +1,8 @@
 //! File encodings: detection on load, conversion on save.
 //!
-//! Backs the Encoding menu: ANSI, UTF-8, UTF-8-BOM, UTF-16 BE/LE BOM
-//! and the legacy "Character sets" (via `encoding_rs`).
+//! Backs the Encoding menu: ANSI (Windows-1252), UTF-8, UTF-8-BOM and
+//! UTF-16 BE/LE BOM.
 
-use encoding_rs::Encoding;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,54 +77,13 @@ fn memchr2(a: u8, b: u8, hay: &[u8]) -> Option<usize> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TextEncoding {
-    /// The system code page (windows-1252 on non-Windows systems).
+    /// Windows-1252 (Western European), the most common legacy code page.
     Ansi,
     Utf8,
     Utf8Bom,
     Utf16BeBom,
     Utf16LeBom,
-    /// A named legacy charset, looked up by its WHATWG label.
-    Charset(&'static str),
 }
-
-/// (menu group, display name, WHATWG label) — the Character
-/// sets menu that `encoding_rs` can encode.
-pub const CHARSETS: &[(&str, &str, &str)] = &[
-    ("Arabic", "ISO 8859-6", "iso-8859-6"),
-    ("Arabic", "Windows-1256", "windows-1256"),
-    ("Baltic", "ISO 8859-4", "iso-8859-4"),
-    ("Baltic", "ISO 8859-13", "iso-8859-13"),
-    ("Baltic", "Windows-1257", "windows-1257"),
-    ("Celtic", "ISO 8859-14", "iso-8859-14"),
-    ("Chinese", "Big5 (Traditional)", "big5"),
-    ("Chinese", "GB2312 (Simplified)", "gbk"),
-    ("Chinese", "GB18030", "gb18030"),
-    ("Cyrillic", "ISO 8859-5", "iso-8859-5"),
-    ("Cyrillic", "KOI8-U", "koi8-u"),
-    ("Cyrillic", "KOI8-R", "koi8-r"),
-    ("Cyrillic", "Mac Cyrillic", "x-mac-cyrillic"),
-    ("Cyrillic", "OEM 866", "ibm866"),
-    ("Cyrillic", "Windows-1251", "windows-1251"),
-    ("Central European", "ISO 8859-2", "iso-8859-2"),
-    ("Central European", "Windows-1250", "windows-1250"),
-    ("Greek", "ISO 8859-7", "iso-8859-7"),
-    ("Greek", "Windows-1253", "windows-1253"),
-    ("Hebrew", "ISO 8859-8", "iso-8859-8"),
-    ("Hebrew", "Windows-1255", "windows-1255"),
-    ("Japanese", "Shift-JIS", "shift_jis"),
-    ("Japanese", "EUC-JP", "euc-jp"),
-    ("Korean", "Windows 949", "euc-kr"),
-    ("North European", "ISO 8859-10", "iso-8859-10"),
-    ("Romanian", "ISO 8859-16", "iso-8859-16"),
-    ("South European", "ISO 8859-3", "iso-8859-3"),
-    ("Thai", "TIS-620", "windows-874"),
-    ("Turkish", "Windows-1254", "windows-1254"),
-    ("Vietnamese", "Windows-1258", "windows-1258"),
-    ("Western European", "ISO 8859-1", "windows-1252"),
-    ("Western European", "ISO 8859-15", "iso-8859-15"),
-    ("Western European", "Windows-1252", "windows-1252"),
-    ("Western European", "Macintosh", "macintosh"),
-];
 
 impl TextEncoding {
     /// Stable identifier used in session files.
@@ -136,7 +94,6 @@ impl TextEncoding {
             Self::Utf8Bom => "utf8bom".into(),
             Self::Utf16BeBom => "utf16be".into(),
             Self::Utf16LeBom => "utf16le".into(),
-            Self::Charset(l) => format!("cs:{l}"),
         }
     }
 
@@ -147,7 +104,7 @@ impl TextEncoding {
             "utf8bom" => Self::Utf8Bom,
             "utf16be" => Self::Utf16BeBom,
             "utf16le" => Self::Utf16LeBom,
-            k => return k.strip_prefix("cs:").and_then(Self::charset),
+            _ => return None,
         })
     }
 
@@ -158,26 +115,6 @@ impl TextEncoding {
             Self::Utf8Bom => "UTF-8-BOM".into(),
             Self::Utf16BeBom => "UTF-16 BE BOM".into(),
             Self::Utf16LeBom => "UTF-16 LE BOM".into(),
-            Self::Charset(l) => CHARSETS
-                .iter()
-                .find(|c| c.2 == l)
-                .map_or_else(|| l.to_string(), |c| c.1.to_string()),
-        }
-    }
-
-    pub fn charset(label: &str) -> Option<Self> {
-        CHARSETS
-            .iter()
-            .find(|c| c.2.eq_ignore_ascii_case(label))
-            .map(|c| Self::Charset(c.2))
-    }
-
-    fn legacy(self) -> &'static Encoding {
-        match self {
-            Self::Charset(l) => {
-                Encoding::for_label(l.as_bytes()).unwrap_or(encoding_rs::WINDOWS_1252)
-            }
-            _ => encoding_rs::WINDOWS_1252,
         }
     }
 
@@ -202,8 +139,7 @@ impl TextEncoding {
                     .0
                     .into_owned()
             }
-            Self::Ansi | Self::Charset(_) => self
-                .legacy()
+            Self::Ansi => encoding_rs::WINDOWS_1252
                 .decode_without_bom_handling(bytes)
                 .0
                 .into_owned(),
@@ -233,7 +169,7 @@ impl TextEncoding {
                 }
                 v
             }
-            Self::Ansi | Self::Charset(_) => self.legacy().encode(text).0.into_owned(),
+            Self::Ansi => encoding_rs::WINDOWS_1252.encode(text).0.into_owned(),
         }
     }
 
@@ -259,8 +195,8 @@ impl TextEncoding {
         }
     }
 
-    /// Detects the encoding of file contents:
-    /// BOM first, then UTF-8 validity, UTF-16 heuristics, then a charset guess.
+    /// Detects the encoding of file contents: BOM first, then UTF-8
+    /// validity, then UTF-16 heuristics; anything else is ANSI.
     pub fn detect(bytes: &[u8]) -> Self {
         Self::detect_in(bytes, false)
     }
@@ -300,14 +236,7 @@ impl TextEncoding {
                 return Self::Utf16BeBom;
             }
         }
-        let mut det = chardetng::EncodingDetector::new(chardetng::Iso2022JpDetection::Deny);
-        det.feed(bytes, !sampled);
-        let enc = det.guess(None, chardetng::Utf8Detection::Allow);
-        if enc == encoding_rs::WINDOWS_1252 {
-            return Self::Ansi;
-        }
-        let name = enc.name().to_ascii_lowercase();
-        Self::charset(&name).unwrap_or(Self::Ansi)
+        Self::Ansi
     }
 }
 

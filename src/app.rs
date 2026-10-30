@@ -17,7 +17,7 @@ use crate::function_list::{FoundItem, FunctionLists};
 use crate::langs::LangRegistry;
 use crate::ops;
 use crate::search::{self, FifMessage, SearchResults};
-use crate::textops::{self, CaseMode, HashAlgo, SortMode};
+use crate::textops::{self, CaseMode, HashAlgo};
 use crate::theme::{Globals, LangStyles, ThemeRegistry};
 
 #[derive(Default)]
@@ -64,6 +64,9 @@ pub struct FindState {
     pub mark_purge: bool,
     pub status: Option<(String, StatusKind)>,
     pub focus_what: bool,
+    /// Where the floating window was last frame (to fade it when the
+    /// pointer is elsewhere).
+    pub window_rect: Option<egui::Rect>,
 }
 
 impl Default for FindState {
@@ -84,6 +87,7 @@ impl Default for FindState {
             mark_purge: true,
             status: None,
             focus_what: false,
+            window_rect: None,
         }
     }
 }
@@ -144,22 +148,22 @@ pub const DEFAULT_FONT_SIZE: u8 = 13;
 #[derive(Default)]
 pub struct Dialogs {
     pub goto: Option<(bool, String)>,
-    pub about: bool,
     pub preferences: bool,
-    pub style_config: bool,
-    pub shortcut_mapper: bool,
     pub column_editor: Option<crate::dialogs::ColumnEditorState>,
     pub summary: bool,
-    pub run: Option<String>,
     pub hash: Option<crate::dialogs::HashDialog>,
     pub windows: bool,
     pub windows_selected: Option<DocId>,
     pub char_range: Option<crate::dialogs::CharRangeDialog>,
     pub rename: Option<(DocId, String)>,
-    pub command_line: bool,
-    pub debug_info: bool,
+    /// Section shown in the Settings window.
     pub pref_tab: usize,
+    /// Keyboard Shortcuts rows (name, menu path, keys), built when shown.
+    pub shortcut_rows: Option<Vec<(String, String, String)>>,
+    pub shortcut_filter: String,
     pub datetime: Option<crate::dialogs::DateTimeDialog>,
+    pub color_picker: Option<crate::colorpick::ColorPicker>,
+    pub password: Option<crate::password::PasswordGenerator>,
 }
 
 pub struct App {
@@ -229,11 +233,22 @@ pub struct App {
     pub pending_goto: Option<(DocId, usize, usize)>,
     /// Contents of the toolbar's "Go to line" box.
     pub goto_line_text: String,
+    /// The menu search box on the toolbar.
+    pub menu_search: crate::ui::MenuSearch,
     pub egui_ctx: Option<egui::Context>,
     pub request_focus_editor: bool,
     pub tab_drag: Option<(usize, usize)>,
+    /// The tab each tab bar last scrolled into view.
+    pub tab_scrolled: [Option<DocId>; 2],
+    /// Search text in the tab list popup.
+    pub tab_list_filter: String,
     pub no_session: bool,
     pub compare: Option<crate::compare_ui::CompareSession>,
+}
+
+/// `1 hit`, `2 hits`.
+pub fn plural(n: usize, one: &str, many: &str) -> String {
+    format!("{n} {}", if n == 1 { one } else { many })
 }
 
 pub struct StartupArgs {
@@ -244,6 +259,8 @@ pub struct StartupArgs {
     pub no_session: bool,
     pub read_only: bool,
     pub always_on_top: bool,
+    /// A tab handed over by another window (see `Command::MoveToNewWindow`).
+    pub take: Option<PathBuf>,
 }
 
 /// Collects how long building each frame takes and prints a summary every
@@ -343,9 +360,12 @@ impl App {
             tree_expanded: HashSet::new(),
             pending_goto: None,
             goto_line_text: String::new(),
+            menu_search: crate::ui::MenuSearch::default(),
             egui_ctx: None,
             request_focus_editor: true,
             tab_drag: None,
+            tab_scrolled: [None, None],
+            tab_list_filter: String::new(),
             no_session: args.no_session,
             compare: None,
             settings,
@@ -403,6 +423,9 @@ impl App {
                     args.column.unwrap_or(1).saturating_sub(1),
                 ));
             }
+        }
+        if let Some(take) = &args.take {
+            app.take_hand_off(take);
         }
         if app.panes[0].tabs.is_empty() {
             app.new_document(0);
@@ -834,6 +857,87 @@ impl App {
 
     // ---------------------------------------------------------------- session
 
+    /// How one tab is saved in a session; `backup` holds its unsaved text.
+    fn session_file(&self, pane: usize, id: DocId, backup: Option<String>) -> SessionFile {
+        let doc = &self.docs[&id];
+        let vs = self.views.get(&(pane, id));
+        SessionFile {
+            path: doc.path.as_ref().map(|p| p.display().to_string()),
+            backup,
+            untitled_name: doc.untitled_name.clone(),
+            lang: self.langs.langs[doc.lang].name.clone(),
+            encoding: doc.encoding.key(),
+            eol: Some(doc.eol),
+            anchor: vs.map_or(0, |v| v.primary().anchor),
+            caret: vs.map_or(0, |v| v.primary().head),
+            top_row: vs.map_or(0.0, |v| v.top_row),
+            bookmarks: doc.bookmarked_lines(),
+            folds: doc
+                .meta
+                .iter()
+                .enumerate()
+                .filter(|(_, m)| m.folded)
+                .map(|(i, _)| i)
+                .collect(),
+            read_only: doc.read_only,
+            view: u8::try_from(pane).unwrap_or(0),
+            tab_color: doc.tab_color,
+            pinned: doc.pinned,
+            dirty: doc.is_dirty(),
+        }
+    }
+
+    /// Writes tab `id` to a hand-off folder (its text, if unsaved, and how
+    /// it was shown) and returns the file a new window takes it from.
+    pub(crate) fn hand_off(&self, pane: usize, id: DocId) -> std::io::Result<PathBuf> {
+        let doc = &self.docs[&id];
+        let dir = std::env::temp_dir().join(format!(
+            "superfastnotepad-handoff-{}-{}",
+            std::process::id(),
+            id
+        ));
+        std::fs::create_dir_all(&dir)?;
+        let mut backup = None;
+        if doc.is_dirty() || doc.path.is_none() {
+            let p = dir.join("text.txt");
+            write_backup_file(&p, &doc.rope)?;
+            backup = Some(p.display().to_string());
+        }
+        let mut file = self.session_file(pane, id, backup);
+        file.view = 0;
+        let session = Session {
+            files: vec![file],
+            active: [Some(0), None],
+            ..Default::default()
+        };
+        let path = dir.join("tab.json");
+        let json = serde_json::to_string(&session).map_err(std::io::Error::other)?;
+        std::fs::write(&path, json)?;
+        Ok(path)
+    }
+
+    /// Opens a tab handed over by another window, then removes the hand-off
+    /// files.
+    pub(crate) fn take_hand_off(&mut self, path: &Path) {
+        let session: Option<Session> = std::fs::read_to_string(path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok());
+        if let Some(mut session) = session {
+            session.compare = None;
+            self.apply_session(session);
+            if let Some(id) = self.panes[0].tabs.last().copied() {
+                self.activate(0, id);
+            }
+        }
+        if let Some(dir) = path.parent()
+            && dir
+                .file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with("superfastnotepad-handoff-"))
+        {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+
     pub fn build_session(&mut self, write_backups: bool) -> Session {
         self.backups_written
             .retain(|id, _| self.docs.get(id).is_some_and(Document::is_dirty));
@@ -857,7 +961,6 @@ impl App {
                 if self.panes[pane].active == ti {
                     session.active[pane] = Some(session.files.len());
                 }
-                let vs = self.views.get(&(pane, *id));
                 let mut backup = None;
                 if write_backups && doc.is_dirty() && !(doc.is_untitled() && doc.len_chars() == 0) {
                     let name = format!(
@@ -892,30 +995,7 @@ impl App {
                     // inline diffs) aren't part of the session.
                     continue;
                 }
-                session.files.push(SessionFile {
-                    path: doc.path.as_ref().map(|p| p.display().to_string()),
-                    backup,
-                    untitled_name: doc.untitled_name.clone(),
-                    lang: self.langs.langs[doc.lang].name.clone(),
-                    encoding: doc.encoding.key(),
-                    eol: Some(doc.eol),
-                    anchor: vs.map_or(0, |v| v.primary().anchor),
-                    caret: vs.map_or(0, |v| v.primary().head),
-                    top_row: vs.map_or(0.0, |v| v.top_row),
-                    bookmarks: doc.bookmarked_lines(),
-                    folds: doc
-                        .meta
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, m)| m.folded)
-                        .map(|(i, _)| i)
-                        .collect(),
-                    read_only: doc.read_only,
-                    view: u8::try_from(pane).unwrap_or(0),
-                    tab_color: doc.tab_color,
-                    pinned: doc.pinned,
-                    dirty: doc.is_dirty(),
-                });
+                session.files.push(self.session_file(pane, *id, backup));
             }
         }
         if write_backups && let Ok(rd) = std::fs::read_dir(&backup_dir) {
@@ -1068,9 +1148,9 @@ impl App {
                         } else if let Some(r) = &self.results {
                             self.find.status = Some((
                                 format!(
-                                    "Find in Files: {} hits in {} files ({searched} searched)",
-                                    r.total_hits(),
-                                    r.files.len()
+                                    "Find in Files: {} in {} ({searched} searched)",
+                                    plural(r.total_hits(), "hit", "hits"),
+                                    plural(r.files.len(), "file", "files")
                                 ),
                                 StatusKind::Info,
                             ));
@@ -1539,66 +1619,6 @@ impl App {
         }
     }
 
-    pub fn expand_vars(&self, s: &str) -> String {
-        let doc = self.active_doc();
-        let path = doc.and_then(|d| d.path.clone()).unwrap_or_default();
-        let name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
-        let (stem, ext) = match name.rsplit_once('.') {
-            Some((a, b)) => (a.to_string(), format!(".{b}")),
-            None => (name.clone(), String::new()),
-        };
-        let dir = path
-            .parent()
-            .map(|p| p.display().to_string())
-            .unwrap_or_default();
-        let (word, line, col) = self
-            .active_id()
-            .and_then(|id| {
-                let d = self.docs.get(&id)?;
-                let v = self.views.get(&(self.focused, id))?;
-                let p = v.primary();
-                let w = if p.is_empty() {
-                    let (a, b) = ops::word_at(d, p.head);
-                    d.slice(a, b)
-                } else {
-                    d.slice(p.start(), p.end())
-                };
-                let (l, c) = d.pos_to_line_col(p.head);
-                Some((w, l + 1, c + 1))
-            })
-            .unwrap_or_default();
-        let exe = std::env::current_exe().unwrap_or_default();
-        let mut out = s
-            .replace("$(FULL_CURRENT_PATH)", &path.display().to_string())
-            .replace("$(CURRENT_DIRECTORY)", &dir)
-            .replace("$(FILE_NAME)", &name)
-            .replace("$(NAME_PART)", &stem)
-            .replace("$(EXT_PART)", &ext)
-            .replace("$(CURRENT_WORD)", &word)
-            .replace("$(CURRENT_LINENUMBER)", &line.to_string())
-            .replace("$(CURRENT_LINE)", &line.to_string())
-            .replace("$(CURRENT_COLUMN)", &col.to_string())
-            .replace(
-                "$(APP_DIRECTORY)",
-                &exe.parent()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_default(),
-            )
-            .replace("$(APP_FULL_FILE_PATH)", &exe.display().to_string());
-        while let Some(start) = out.find("$(SYS.") {
-            let Some(end) = out[start..].find(')') else {
-                break;
-            };
-            let var = &out[start + 6..start + end];
-            let val = std::env::var(var).unwrap_or_default();
-            out.replace_range(start..start + end + 1, &val);
-        }
-        out
-    }
-
     // ---------------------------------------------------------------- command dispatch
 
     #[allow(clippy::too_many_lines)]
@@ -1623,6 +1643,16 @@ impl App {
                     for f in files {
                         self.open_path(&f, pane);
                     }
+                }
+            }
+            Command::OpenFileFolderInWorkspace => {
+                if let Some(dir) = self
+                    .active_doc()
+                    .and_then(|d| d.path.as_ref())
+                    .and_then(|p| p.parent())
+                    .map(Path::to_path_buf)
+                {
+                    self.add_workspace_folder(dir);
                 }
             }
             Command::OpenFolderAsWorkspace => {
@@ -1694,24 +1724,6 @@ impl App {
                     .collect();
                 self.close_many(&v);
             }
-            Command::CloseAllToLeft | Command::CloseAllToRight => {
-                let p = &self.panes[pane];
-                let a = p.active;
-                let v: Vec<_> = p
-                    .tabs
-                    .iter()
-                    .enumerate()
-                    .filter(|(i, _)| {
-                        if cmd == Command::CloseAllToLeft {
-                            *i < a
-                        } else {
-                            *i > a
-                        }
-                    })
-                    .map(|(_, id)| (pane, *id))
-                    .collect();
-                self.close_many(&v);
-            }
             Command::CloseAllUnchanged => {
                 let v: Vec<_> = self
                     .all_doc_ids()
@@ -1780,9 +1792,14 @@ impl App {
                     crate::platform::open_terminal(&dir);
                 }
             }
-            Command::OpenInDefaultViewer | Command::ViewInBrowser => {
+            Command::OpenInDefaultViewer => {
                 if let Some(p) = self.active_doc().and_then(|d| d.path.clone()) {
                     crate::platform::open_with_default_app(&p.display().to_string());
+                }
+            }
+            Command::ViewInBrowser => {
+                if let Some(p) = self.active_doc().and_then(|d| d.path.clone()) {
+                    crate::platform::open_in_browser(&p);
                 }
             }
             Command::Exit => self.request_exit(),
@@ -2394,6 +2411,21 @@ impl App {
             Command::DateTimeTool => {
                 self.dialogs.datetime = Some(crate::dialogs::DateTimeDialog::now());
             }
+            Command::SearchMenus => {
+                self.settings.show_toolbar = true;
+                self.menu_search.focus = true;
+            }
+            Command::PasswordGenerator => {
+                self.dialogs.password = Some(crate::password::PasswordGenerator::new());
+            }
+            Command::ColorPicker => {
+                // Start from a color already selected or under the caret.
+                let start = self
+                    .selection_or_word()
+                    .and_then(|w| crate::colorpick::parse_hex(&w))
+                    .unwrap_or([255, 255, 255]);
+                self.dialogs.color_picker = Some(crate::colorpick::ColorPicker::new(start));
+            }
             Command::NewWindow => {
                 if let Err(e) = crate::platform::open_new_window(&[]) {
                     self.flash(format!("Couldn't open a new window: {e}"));
@@ -2401,15 +2433,12 @@ impl App {
             }
             Command::MoveToNewWindow => {
                 if let Some(id) = self.active_id() {
-                    let doc = &self.docs[&id];
-                    match doc.path.clone() {
-                        Some(path) if !doc.is_dirty() => {
-                            match crate::platform::open_new_window(&[path]) {
-                                Ok(()) => self.close_tab(pane, id, false),
-                                Err(e) => self.flash(format!("Couldn't open a new window: {e}")),
-                            }
-                        }
-                        _ => self.flash("Save the document first to move it to a new window"),
+                    let moved = self.hand_off(pane, id).and_then(|take| {
+                        crate::platform::open_new_window(&["--take".into(), take.into()])
+                    });
+                    match moved {
+                        Ok(()) => self.force_remove(id),
+                        Err(e) => self.flash(format!("Couldn't open a new window: {e}")),
                     }
                 }
             }
@@ -2601,9 +2630,15 @@ impl App {
                 }
             }
             // ------------------------------------------------ Settings / tools
-            Command::Preferences => self.dialogs.preferences = true,
-            Command::StyleConfigurator => self.dialogs.style_config = true,
-            Command::ShortcutMapper => self.dialogs.shortcut_mapper = true,
+            Command::Preferences | Command::StyleConfigurator | Command::ShortcutMapper => {
+                use crate::dialogs::settings_section as section;
+                self.dialogs.preferences = true;
+                self.dialogs.pref_tab = match cmd {
+                    Command::StyleConfigurator => section::APPEARANCE,
+                    Command::ShortcutMapper => section::SHORTCUTS,
+                    _ => self.dialogs.pref_tab,
+                };
+            }
             Command::Hash(algo, source) => self.hash_command(algo, source),
             Command::Mime(op) => self.mime_command(op),
             Command::Data(op) => {
@@ -2618,6 +2653,10 @@ impl App {
                 };
                 self.transform_text(title, f);
             }
+            Command::InsertUnixTime => {
+                let now = chrono::Utc::now().timestamp().to_string();
+                self.with_active(|d, v, _| ops::insert_text(d, v, &now, EditKind::Other));
+            }
             Command::InsertUuid => {
                 let id = crate::datatools::uuid_v4();
                 self.with_active(|d, v, _| ops::insert_text(d, v, &id, EditKind::Other));
@@ -2629,19 +2668,6 @@ impl App {
             Command::CompareSwap => self.compare_swap(),
             Command::CompareInline => self.compare_inline(),
             Command::CompareCopyAll(to_right) => self.compare_copy_all(to_right),
-            Command::CompareIgnoreFindText => {
-                let what = self.find.what.clone();
-                if what.is_empty() {
-                    self.flash("Type a regex in the Find box first");
-                } else {
-                    self.settings.compare.ignore_pattern = Some(what);
-                    self.recompute_compare();
-                }
-            }
-            Command::CompareClearIgnore => {
-                self.settings.compare.ignore_pattern = None;
-                self.recompute_compare();
-            }
             Command::CompareClipboard => self.compare_with_clipboard(),
             Command::CompareSaved => self.compare_with_saved(),
             Command::CompareClear => self.clear_compare(),
@@ -2665,15 +2691,6 @@ impl App {
                 self.recompute_compare();
             }
             Command::Format(op) => self.format_command(op),
-            Command::RunDialog => self.dialogs.run = Some(String::new()),
-            Command::RunSaved(i) => {
-                if let Some((_, c)) = self.settings.run_commands.get(i).cloned() {
-                    let line = self.expand_vars(&c);
-                    if let Err(e) = crate::platform::run_shell(&line) {
-                        self.message("Run", &e.to_string());
-                    }
-                }
-            }
             // ------------------------------------------------ Window / help
             Command::WindowsDialog => self.dialogs.windows = true,
             Command::SortTabs(by) => {
@@ -2712,9 +2729,6 @@ impl App {
                     p.active = p.tabs.iter().position(|&t| t == a).unwrap_or(0);
                 }
             }
-            Command::About => self.dialogs.about = true,
-            Command::CommandLineHelp => self.dialogs.command_line = true,
-            Command::DebugInfo => self.dialogs.debug_info = true,
         }
     }
 
@@ -3097,9 +3111,9 @@ impl App {
         }
         self.find.status = Some((
             format!(
-                "Find All: {} hits in {} documents",
-                results.total_hits(),
-                results.files.len()
+                "Find All: {} in {}",
+                plural(results.total_hits(), "hit", "hits"),
+                plural(results.files.len(), "document", "documents")
             ),
             StatusKind::Info,
         ));
@@ -3443,27 +3457,6 @@ impl App {
                 }
                 d.marks.sort_by_key(|m| (m.start, m.end));
             });
-        }
-    }
-
-    pub fn sort_mode_label(m: SortMode) -> &'static str {
-        match m {
-            SortMode::LexAsc => "Sort Lines Lexicographically Ascending",
-            SortMode::LexDesc => "Sort Lines Lexicographically Descending",
-            SortMode::LexCiAsc => "Sort Lines Lex. Ascending Ignoring Case",
-            SortMode::LexCiDesc => "Sort Lines Lex. Descending Ignoring Case",
-            SortMode::LocaleAsc => "Sort Lines In Locale Order Ascending",
-            SortMode::LocaleDesc => "Sort Lines In Locale Order Descending",
-            SortMode::IntAsc => "Sort Lines As Integers Ascending",
-            SortMode::IntDesc => "Sort Lines As Integers Descending",
-            SortMode::DecCommaAsc => "Sort Lines As Decimals (Comma) Ascending",
-            SortMode::DecCommaDesc => "Sort Lines As Decimals (Comma) Descending",
-            SortMode::DecDotAsc => "Sort Lines As Decimals (Dot) Ascending",
-            SortMode::DecDotDesc => "Sort Lines As Decimals (Dot) Descending",
-            SortMode::LengthAsc => "Sort Lines By Length Ascending",
-            SortMode::LengthDesc => "Sort Lines By Length Descending",
-            SortMode::Reverse => "Reverse Line Order",
-            SortMode::Random => "Randomize Line Order",
         }
     }
 

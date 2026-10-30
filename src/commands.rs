@@ -75,12 +75,19 @@ pub enum Command {
     FontSmaller,
     /// Opens the date and Unix time converter.
     DateTimeTool,
+    ColorPicker,
+    PasswordGenerator,
+    /// Focus the menu search box on the toolbar.
+    SearchMenus,
     Data(DataOp),
     InsertUuid,
+    InsertUnixTime,
     /// Moves the current (saved) document into a new window.
     MoveToNewWindow,
     Open,
     OpenFolderAsWorkspace,
+    /// Adds the active file's folder to the workspace panel.
+    OpenFileFolderInWorkspace,
     Reload,
     Save,
     SaveAs,
@@ -91,8 +98,6 @@ pub enum Command {
     CloseAll,
     CloseAllButCurrent,
     CloseAllButPinned,
-    CloseAllToLeft,
-    CloseAllToRight,
     CloseAllUnchanged,
     RestoreLastClosed,
     OpenAllRecent,
@@ -283,20 +288,11 @@ pub enum Command {
     CompareInline,
     /// Copy every difference: true = left to right.
     CompareCopyAll(bool),
-    CompareIgnoreFindText,
-    CompareClearIgnore,
     CompareOption(u8),
     Format(FormatOp),
-    // Run
-    RunDialog,
-    RunSaved(usize),
     // Window
     WindowsDialog,
     SortTabs(TabSort),
-    // Help
-    About,
-    CommandLineHelp,
-    DebugInfo,
 }
 
 #[derive(Clone, Copy)]
@@ -364,6 +360,7 @@ pub fn default_shortcuts() -> Vec<(Command, Shortcut)> {
         (K::New, s(C, N, N, Key::N)),
         (K::NewWindow, s(C, N, C, Key::N)),
         (K::FilterLines, s(C, C, N, Key::L)),
+        (K::SearchMenus, s(C, N, C, Key::P)),
         (K::FontBigger, s(C, N, N, Key::Plus)),
         (K::FontBigger, s(C, N, N, Key::Equals)),
         (K::FontSmaller, s(C, N, N, Key::Minus)),
@@ -445,7 +442,6 @@ pub fn default_shortcuts() -> Vec<(Command, Shortcut)> {
         (K::Format(FormatOp::JsonPretty), s(C, C, N, Key::M)),
         (K::Format(FormatOp::XmlPretty), s(C, C, C, Key::B)),
         (K::Format(FormatOp::Auto), s(N, C, C, Key::F)),
-        (K::About, s(N, N, N, Key::F1)),
         (K::StyleAll(1), s(C, C, N, Key::Num1)),
     ];
     // F5 is "Run..."; date-time has no default shortcut.

@@ -34,6 +34,33 @@ impl Default for ColumnEditorState {
     }
 }
 
+/// Opacity of the floating Find window while the pointer isn't over it.
+const FIND_FADED_OPACITY: f32 = 0.7;
+
+/// Sections of the Settings window, in order.
+pub const SETTINGS_SECTIONS: [&str; 8] = [
+    "General",
+    "Appearance",
+    "Editing",
+    "New Documents",
+    "Auto-Completion",
+    "Files and Session",
+    "Formatting",
+    "Keyboard Shortcuts",
+];
+
+/// Indexes into [`SETTINGS_SECTIONS`].
+pub mod settings_section {
+    pub const GENERAL: usize = 0;
+    pub const APPEARANCE: usize = 1;
+    pub const EDITING: usize = 2;
+    pub const NEW_DOCUMENTS: usize = 3;
+    pub const COMPLETION: usize = 4;
+    pub const FILES: usize = 5;
+    pub const FORMATTING: usize = 6;
+    pub const SHORTCUTS: usize = 7;
+}
+
 /// State of the "Date and Unix Time" tool: a date/time picker converted to
 /// Unix time, and a Unix time converted back to a date.
 #[derive(Clone, Debug)]
@@ -183,10 +210,15 @@ fn history_combo(
 
 impl App {
     #[allow(clippy::too_many_lines)]
-    pub fn find_dialog(&mut self, ctx: &Context) {
-        if !self.find.open {
+    /// The Find/Replace/Find in Files/Mark dialog: a floating window, or a
+    /// panel docked at the bottom. Called before the editors are laid out
+    /// (`docked_pass`, so a docked panel takes its space) and after them.
+    #[allow(clippy::too_many_lines)]
+    pub fn find_dialog(&mut self, root: &mut Ui, docked_pass: bool) {
+        if !self.find.open || self.settings.find_docked != docked_pass {
             return;
         }
+        let ctx = root.ctx().clone();
         let mut open = true;
         let title = match self.find.tab {
             FindTab::Find => "Find",
@@ -195,216 +227,39 @@ impl App {
             FindTab::Mark => "Mark",
         };
         let mut actions: Vec<&'static str> = Vec::new();
-        egui::Window::new(title)
-            .id(egui::Id::unique("find_dialog"))
-            .open(&mut open)
-            .resizable(false)
-            .collapsible(false)
-            .default_pos(ctx.content_rect().right_top() + egui::vec2(-560.0, 80.0))
-            .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    for (t, label) in [
-                        (FindTab::Find, "Find"),
-                        (FindTab::Replace, "Replace"),
-                        (FindTab::FindInFiles, "Find in Files"),
-                        (FindTab::Mark, "Mark"),
-                    ] {
-                        if ui.selectable_label(self.find.tab == t, label).clicked() {
-                            self.find.tab = t;
-                        }
-                    }
-                });
-                ui.separator();
-                let focus = std::mem::take(&mut self.find.focus_what);
-                ui.horizontal_top(|ui| {
-                    ui.vertical(|ui| {
-                        egui::Grid::new("find_grid")
-                            .num_columns(2)
-                            .spacing([8.0, 6.0])
-                            .show(ui, |ui| {
-                                ui.label("Find what:");
-                                let hist = self.settings.find_history.clone();
-                                let r = history_combo(
-                                    ui,
-                                    "find_what",
-                                    &mut self.find.what,
-                                    &hist,
-                                    300.0,
-                                    focus,
-                                );
-                                if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                                    actions.push(match self.find.tab {
-                                        FindTab::FindInFiles => "fif",
-                                        FindTab::Mark => "mark",
-                                        _ => "next",
-                                    });
-                                }
-                                ui.end_row();
-                                if matches!(self.find.tab, FindTab::Replace | FindTab::FindInFiles)
-                                {
-                                    ui.label("Replace with:");
-                                    let hist = self.settings.replace_history.clone();
-                                    history_combo(
-                                        ui,
-                                        "replace_with",
-                                        &mut self.find.with,
-                                        &hist,
-                                        300.0,
-                                        false,
-                                    );
-                                    ui.end_row();
-                                }
-                                if self.find.tab == FindTab::FindInFiles {
-                                    ui.label("Filters:");
-                                    let hist = self.settings.fif_filters.clone();
-                                    history_combo(
-                                        ui,
-                                        "fif_filters",
-                                        &mut self.find.fif_filters,
-                                        &hist,
-                                        300.0,
-                                        false,
-                                    );
-                                    ui.end_row();
-                                    ui.label("Directory:");
-                                    ui.horizontal(|ui| {
-                                        let hist = self.settings.fif_dirs.clone();
-                                        history_combo(
-                                            ui,
-                                            "fif_dir",
-                                            &mut self.find.fif_dir,
-                                            &hist,
-                                            270.0,
-                                            false,
-                                        );
-                                        if ui.button("...").clicked()
-                                            && let Some(d) = rfd::FileDialog::new().pick_folder()
-                                        {
-                                            self.find.fif_dir = d.display().to_string();
-                                        }
-                                    });
-                                    ui.end_row();
-                                }
-                            });
-                        ui.add_space(4.0);
-                        ui.horizontal(|ui| {
-                            ui.vertical(|ui| {
-                                if matches!(self.find.tab, FindTab::Find | FindTab::Replace) {
-                                    ui.checkbox(&mut self.find.backward, "Backward direction");
-                                }
-                                ui.checkbox(
-                                    &mut self.settings.search_opts.whole_word,
-                                    "Match whole word only",
-                                );
-                                ui.checkbox(
-                                    &mut self.settings.search_opts.match_case,
-                                    "Match case",
-                                );
-                                if self.find.tab != FindTab::FindInFiles {
-                                    ui.checkbox(&mut self.settings.search_opts.wrap, "Wrap around");
-                                }
-                                if self.find.tab == FindTab::Mark {
-                                    ui.checkbox(&mut self.find.mark_bookmark, "Bookmark line");
-                                    ui.checkbox(&mut self.find.mark_purge, "Purge for each search");
-                                }
-                                if self.find.tab == FindTab::FindInFiles {
-                                    ui.checkbox(
-                                        &mut self.find.fif_follow_current,
-                                        "Follow current doc.",
-                                    );
-                                    ui.checkbox(&mut self.find.fif_recursive, "In all sub-folders");
-                                    ui.checkbox(&mut self.find.fif_hidden, "In hidden folders");
-                                }
-                            });
-                            ui.add_space(12.0);
-                            ui.group(|ui| {
-                                ui.vertical(|ui| {
-                                    ui.label("Search Mode");
-                                    let m = &mut self.settings.search_opts.mode;
-                                    ui.radio_value(m, SearchMode::Normal, "Normal");
-                                    ui.radio_value(
-                                        m,
-                                        SearchMode::Extended,
-                                        "Extended (\\n, \\r, \\t, \\0, \\x...)",
-                                    );
-                                    ui.horizontal(|ui| {
-                                        ui.radio_value(m, SearchMode::Regex, "Regular expression");
-                                        let en = *m == SearchMode::Regex;
-                                        ui.add_enabled(
-                                            en,
-                                            egui::Checkbox::new(
-                                                &mut self.settings.search_opts.dot_matches_newline,
-                                                ". matches newline",
-                                            ),
-                                        );
-                                    });
-                                });
-                            });
-                            if matches!(
-                                self.find.tab,
-                                FindTab::Replace | FindTab::Mark | FindTab::Find
-                            ) {
-                                ui.add_space(8.0);
-                                ui.checkbox(&mut self.find.in_selection, "In selection");
-                            }
-                        });
-                    });
-                    ui.add_space(8.0);
-                    ui.vertical(|ui| {
-                        let bw = 220.0;
-                        let mut btn = |ui: &mut Ui, label: &str, act: &'static str| {
-                            if ui.add_sized([bw, 22.0], egui::Button::new(label)).clicked() {
-                                actions.push(act);
-                            }
-                        };
-                        match self.find.tab {
-                            FindTab::Find => {
-                                btn(ui, "Find Next", "next");
-                                btn(ui, "Count", "count");
-                                btn(ui, "Find All in Current Document", "find_all_cur");
-                                btn(ui, "Find All in All Opened Documents", "find_all_docs");
-                            }
-                            FindTab::Replace => {
-                                btn(ui, "Find Next", "next");
-                                btn(ui, "Replace", "replace");
-                                btn(ui, "Replace All", "replace_all");
-                                btn(
-                                    ui,
-                                    "Replace All in All Opened Documents",
-                                    "replace_all_docs",
-                                );
-                            }
-                            FindTab::FindInFiles => {
-                                if self.fif.is_some() {
-                                    btn(ui, "Stop", "fif_stop");
-                                } else {
-                                    btn(ui, "Find All", "fif");
-                                    btn(ui, "Replace in Files", "rif");
-                                }
-                            }
-                            FindTab::Mark => {
-                                btn(ui, "Mark All", "mark");
-                                btn(ui, "Clear all marks", "clear_marks");
-                                btn(ui, "Copy Marked Text", "copy_marked");
-                            }
-                        }
-                        btn(ui, "Close", "close");
-                    });
-                });
-                ui.separator();
-                if let Some(f) = &self.fif {
-                    ui.label(format!("Searching... {} files", f.progress));
-                } else if let Some((msg, kind)) = &self.find.status {
-                    let c = match kind {
-                        StatusKind::Info => Color32::from_rgb(0x30, 0x60, 0xD0),
-                        StatusKind::NotFound => Color32::from_rgb(0xD0, 0x20, 0x20),
-                        StatusKind::Wrapped => Color32::from_rgb(0x20, 0x90, 0x20),
-                    };
-                    ui.label(RichText::new(msg).color(c));
-                } else {
-                    ui.label(" ");
-                }
+        if docked_pass {
+            egui::Panel::bottom("find_dock").show(root, |ui| {
+                ui.add_space(4.0);
+                self.find_body(ui, &mut actions);
+                ui.add_space(2.0);
             });
+        } else {
+            // See-through while the pointer is elsewhere (searching from the
+            // keyboard), so matches behind the window stay visible.
+            let hovered = self
+                .find
+                .window_rect
+                .zip(ctx.pointer_hover_pos())
+                .is_some_and(|(r, p)| r.contains(p));
+            let t = ctx.animate_bool_with_time(egui::Id::unique("find_fade"), hovered, 0.15);
+            let opacity = egui::lerp(FIND_FADED_OPACITY..=1.0, t);
+            let mut frame = egui::Frame::window(&ctx.global_style());
+            frame.fill = frame.fill.gamma_multiply(opacity);
+            frame.stroke.color = frame.stroke.color.gamma_multiply(opacity);
+            frame.shadow.color = frame.shadow.color.gamma_multiply(opacity * opacity);
+            let shown = egui::Window::new(title)
+                .id(egui::Id::unique("find_dialog"))
+                .open(&mut open)
+                .resizable(false)
+                .collapsible(false)
+                .frame(frame)
+                .default_pos(ctx.content_rect().right_top() + egui::vec2(-560.0, 80.0))
+                .show(&ctx, |ui| {
+                    ui.multiply_opacity(opacity);
+                    self.find_body(ui, &mut actions);
+                });
+            self.find.window_rect = shown.map(|r| r.response.rect);
+        }
         if !open {
             self.find.open = false;
         }
@@ -439,9 +294,218 @@ impl App {
                     self.find.open = false;
                     self.request_focus_editor = true;
                 }
+                "dock" => self.settings.find_docked = !self.settings.find_docked,
                 _ => {}
             }
         }
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn find_body(&mut self, ui: &mut Ui, actions: &mut Vec<&'static str>) {
+        ui.horizontal(|ui| {
+            for (t, label) in [
+                (FindTab::Find, "Find"),
+                (FindTab::Replace, "Replace"),
+                (FindTab::FindInFiles, "Find in Files"),
+                (FindTab::Mark, "Mark"),
+            ] {
+                if ui.selectable_label(self.find.tab == t, label).clicked() {
+                    self.find.tab = t;
+                }
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let (label, tip) = if self.settings.find_docked {
+                    ("Float", "Show as a floating window")
+                } else {
+                    ("Dock", "Dock at the bottom of the window")
+                };
+                if ui.small_button(label).on_hover_text(tip).clicked() {
+                    actions.push("dock");
+                }
+            });
+        });
+        ui.separator();
+        let focus = std::mem::take(&mut self.find.focus_what);
+        ui.horizontal_top(|ui| {
+            ui.vertical(|ui| {
+                egui::Grid::new("find_grid")
+                    .num_columns(2)
+                    .spacing([8.0, 6.0])
+                    .show(ui, |ui| {
+                        ui.label("Find what:");
+                        let hist = self.settings.find_history.clone();
+                        let r = history_combo(
+                            ui,
+                            "find_what",
+                            &mut self.find.what,
+                            &hist,
+                            300.0,
+                            focus,
+                        );
+                        if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                            actions.push(match self.find.tab {
+                                FindTab::FindInFiles => "fif",
+                                FindTab::Mark => "mark",
+                                _ => "next",
+                            });
+                        }
+                        ui.end_row();
+                        if matches!(self.find.tab, FindTab::Replace | FindTab::FindInFiles)
+                        {
+                            ui.label("Replace with:");
+                            let hist = self.settings.replace_history.clone();
+                            history_combo(
+                                ui,
+                                "replace_with",
+                                &mut self.find.with,
+                                &hist,
+                                300.0,
+                                false,
+                            );
+                            ui.end_row();
+                        }
+                        if self.find.tab == FindTab::FindInFiles {
+                            ui.label("Filters:");
+                            let hist = self.settings.fif_filters.clone();
+                            history_combo(
+                                ui,
+                                "fif_filters",
+                                &mut self.find.fif_filters,
+                                &hist,
+                                300.0,
+                                false,
+                            );
+                            ui.end_row();
+                            ui.label("Directory:");
+                            ui.horizontal(|ui| {
+                                let hist = self.settings.fif_dirs.clone();
+                                history_combo(
+                                    ui,
+                                    "fif_dir",
+                                    &mut self.find.fif_dir,
+                                    &hist,
+                                    270.0,
+                                    false,
+                                );
+                                if ui.button("...").clicked()
+                                    && let Some(d) = rfd::FileDialog::new().pick_folder()
+                                {
+                                    self.find.fif_dir = d.display().to_string();
+                                }
+                            });
+                            ui.end_row();
+                        }
+                    });
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        if matches!(self.find.tab, FindTab::Find | FindTab::Replace) {
+                            ui.checkbox(&mut self.find.backward, "Search backward");
+                        }
+                        ui.checkbox(
+                            &mut self.settings.search_opts.whole_word,
+                            "Whole word only",
+                        );
+                        ui.checkbox(
+                            &mut self.settings.search_opts.match_case,
+                            "Match case",
+                        );
+                        if self.find.tab != FindTab::FindInFiles {
+                            ui.checkbox(&mut self.settings.search_opts.wrap, "Wrap around");
+                            ui.checkbox(&mut self.find.in_selection, "In selection");
+                        }
+                        if self.find.tab == FindTab::Mark {
+                            ui.checkbox(&mut self.find.mark_bookmark, "Bookmark line");
+                            ui.checkbox(&mut self.find.mark_purge, "Purge for each search");
+                        }
+                        if self.find.tab == FindTab::FindInFiles {
+                            ui.checkbox(
+                                &mut self.find.fif_follow_current,
+                                "Follow current doc.",
+                            );
+                            ui.checkbox(&mut self.find.fif_recursive, "In all sub-folders");
+                            ui.checkbox(&mut self.find.fif_hidden, "In hidden folders");
+                        }
+                    });
+                    ui.add_space(12.0);
+                    ui.group(|ui| {
+                        ui.vertical(|ui| {
+                            ui.label(RichText::new("Search mode").weak());
+                            let m = &mut self.settings.search_opts.mode;
+                            ui.radio_value(m, SearchMode::Normal, "Normal");
+                            ui.radio_value(
+                                m,
+                                SearchMode::Extended,
+                                "Extended (\\n \\t \\x..)",
+                            )
+                            .on_hover_text("\\n, \\r, \\t, \\0, \\xNN (hex), \\uNNNN (Unicode), \\dNNN (decimal), \\oNNN (octal), \\bNNNNNNNN (binary)");
+                            ui.radio_value(m, SearchMode::Regex, "Regular expression");
+                            // Only applies to regular expressions.
+                            if *m == SearchMode::Regex {
+                                ui.indent("dot_nl", |ui| {
+                                    ui.checkbox(
+                                        &mut self.settings.search_opts.dot_matches_newline,
+                                        ". matches newline",
+                                    );
+                                });
+                            }
+                        });
+                    });
+                });
+            });
+            ui.add_space(8.0);
+            ui.vertical(|ui| {
+                let bw = 180.0;
+                let mut btn = |ui: &mut Ui, label: &str, act: &'static str| {
+                    if ui.add_sized([bw, 22.0], egui::Button::new(label)).clicked() {
+                        actions.push(act);
+                    }
+                };
+                match self.find.tab {
+                    FindTab::Find => {
+                        btn(ui, "Find Next", "next");
+                        btn(ui, "Count", "count");
+                        btn(ui, "Find All in This Tab", "find_all_cur");
+                        btn(ui, "Find All in Open Tabs", "find_all_docs");
+                    }
+                    FindTab::Replace => {
+                        btn(ui, "Find Next", "next");
+                        btn(ui, "Replace", "replace");
+                        btn(ui, "Replace All", "replace_all");
+                        btn(ui, "Replace All in Open Tabs", "replace_all_docs");
+                    }
+                    FindTab::FindInFiles => {
+                        if self.fif.is_some() {
+                            btn(ui, "Stop", "fif_stop");
+                        } else {
+                            btn(ui, "Find All", "fif");
+                            btn(ui, "Replace in Files", "rif");
+                        }
+                    }
+                    FindTab::Mark => {
+                        btn(ui, "Mark All", "mark");
+                        btn(ui, "Clear All Marks", "clear_marks");
+                        btn(ui, "Copy Marked Text", "copy_marked");
+                    }
+                }
+                btn(ui, "Close", "close");
+            });
+        });
+        // Status bar: what the last search found.
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.set_min_height(16.0);
+            if let Some(f) = &self.fif {
+                ui.label(RichText::new(format!("Searching... {} files", f.progress)).small());
+            } else if let Some((msg, kind)) = &self.find.status {
+                let c = match kind {
+                    StatusKind::Info => Color32::from_rgb(0x30, 0x60, 0xD0),
+                    StatusKind::NotFound => Color32::from_rgb(0xD0, 0x20, 0x20),
+                    StatusKind::Wrapped => Color32::from_rgb(0x20, 0x90, 0x20),
+                };
+                ui.add(egui::Label::new(RichText::new(msg).color(c).small()).truncate());
+            }
+        });
     }
 
     #[allow(clippy::too_many_lines)]
@@ -466,29 +530,31 @@ impl App {
                 .show(ctx, |ui| {
                     ui.horizontal(|ui| {
                         ui.radio_value(&mut by_line, true, "Line");
-                        ui.radio_value(&mut by_line, false, "Offset");
+                        ui.radio_value(&mut by_line, false, "Character offset");
                     });
-                    ui.label(format!(
-                        "You are here : {}",
-                        if by_line { cur_line } else { cur_pos }
-                    ));
                     ui.horizontal(|ui| {
-                        ui.label("Go to:");
-                        let r = ui.text_edit_singleline(&mut value);
+                        let r = ui.add(
+                            egui::TextEdit::singleline(&mut value)
+                                .desired_width(120.0)
+                                .hint_text(if by_line { "Line number" } else { "Offset" }),
+                        );
                         r.request_focus();
+                        value.retain(|c| c.is_ascii_digit());
                         if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                             go = true;
                         }
+                        let (cur, max) = if by_line {
+                            (cur_line, max_line)
+                        } else {
+                            (cur_pos, max_pos)
+                        };
+                        ui.label(RichText::new(format!("now {cur}, last {max}")).weak());
                     });
-                    ui.label(format!(
-                        "You can't go further than : {}",
-                        if by_line { max_line } else { max_pos }
-                    ));
                     ui.horizontal(|ui| {
                         if ui.button("Go").clicked() {
                             go = true;
                         }
-                        if ui.button("I'm going nowhere").clicked() {
+                        if ui.button("Cancel").clicked() {
                             self.dialogs.goto = None;
                         }
                     });
@@ -519,185 +585,57 @@ impl App {
 
         if self.dialogs.preferences {
             let mut open = true;
-            egui::Window::new("Preferences")
+            egui::Window::new("Settings")
                 .open(&mut open)
-                .default_width(560.0)
-                .show(ctx, |ui| self.preferences_ui(ui));
+                .resizable(false)
+                .collapsible(false)
+                .show(ctx, |ui| self.settings_ui(ui));
             if !open {
                 self.dialogs.preferences = false;
+                self.dialogs.shortcut_rows = None;
                 crate::config::save_settings(&self.settings);
-            }
-        }
-
-        if self.dialogs.style_config {
-            let mut open = true;
-            egui::Window::new("Theme and Font")
-                .open(&mut open)
-                .default_width(420.0)
-                .show(ctx, |ui| {
-                    let mut follow = self.settings.follow_system_theme;
-                    ui.checkbox(&mut follow, "Match the system light/dark setting");
-                    if follow != self.settings.follow_system_theme {
-                        self.settings.follow_system_theme = follow;
-                        if !follow {
-                            // Keep showing what's on screen now.
-                            self.settings.theme = self.themes.themes[self.theme_idx].name.clone();
-                        }
-                        let dark = self.system_dark;
-                        self.follow_system_theme(dark);
-                    }
-                    let names: Vec<String> =
-                        self.themes.themes.iter().map(|t| t.name.clone()).collect();
-                    let combo =
-                        |ui: &mut Ui, id: &str, label: &str, current: &str| -> Option<usize> {
-                            let mut pick = None;
-                            ui.horizontal(|ui| {
-                                ui.label(label);
-                                egui::ComboBox::from_id_salt(id)
-                                    .selected_text(current)
-                                    .width(220.0)
-                                    .show_ui(ui, |ui| {
-                                        for (i, n) in names.iter().enumerate() {
-                                            if ui.selectable_label(n == current, n).clicked() {
-                                                pick = Some(i);
-                                            }
-                                        }
-                                    });
-                            });
-                            pick
-                        };
-                    if self.settings.follow_system_theme {
-                        let (light, dark) = (
-                            self.settings.theme.clone(),
-                            self.settings.dark_theme.clone(),
-                        );
-                        if let Some(i) = combo(ui, "theme_light", "Light theme:", &light) {
-                            self.settings.theme = names[i].clone();
-                        }
-                        if let Some(i) = combo(ui, "theme_dark", "Dark theme:", &dark) {
-                            self.settings.dark_theme = names[i].clone();
-                        }
-                        let dark = self.system_dark;
-                        self.follow_system_theme(dark);
-                    } else {
-                        let current = names[self.theme_idx].clone();
-                        if let Some(i) = combo(ui, "theme", "Theme:", &current) {
-                            self.set_theme(i);
-                        }
-                    }
-                    ui.add_space(6.0);
-                    ui.horizontal(|ui| {
-                        ui.label("Editor font size (pt):");
-                        ui.add(
-                            egui::DragValue::new(&mut self.settings.font_size)
-                                .range(6.0..=48.0)
-                                .speed(0.5),
-                        );
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("Interface scale:");
-                        ui.add(
-                            egui::DragValue::new(&mut self.settings.ui_scale)
-                                .range(0.6..=2.5)
-                                .speed(0.05),
-                        );
-                    });
-                    ui.add_space(6.0);
-                    let g = &self.globals;
-                    egui::Frame::NONE
-                        .fill(g.bg)
-                        .inner_margin(8.0)
-                        .show(ui, |ui| {
-                            ui.label(
-                                RichText::new("Preview: The quick brown fox")
-                                    .color(g.fg)
-                                    .monospace(),
-                            );
-                            let swatch = |ui: &mut Ui, c: Color32, l: &str| {
-                                ui.horizontal(|ui| {
-                                    let (r, _) = ui.allocate_exact_size(
-                                        egui::vec2(14.0, 14.0),
-                                        egui::Sense::hover(),
-                                    );
-                                    ui.painter().rect_filled(r, 2.0, c);
-                                    ui.label(RichText::new(l).color(g.fg));
-                                });
-                            };
-                            swatch(ui, g.current_line_bg, "Current line background colour");
-                            swatch(ui, g.selection_bg, "Selected text colour");
-                            swatch(ui, g.caret, "Caret colour");
-                            swatch(ui, g.smart_highlight, "Smart Highlighting");
-                            swatch(ui, g.find_mark, "Find Mark Style");
-                            for (i, c) in g.mark_styles.iter().enumerate() {
-                                swatch(ui, *c, &format!("Mark Style {}", i + 1));
-                            }
-                        });
-                    ui.label(RichText::new("Themes are built in; choose one above.").weak());
-                });
-            if !open {
-                self.dialogs.style_config = false;
-                crate::config::save_settings(&self.settings);
-            }
-        }
-
-        if self.dialogs.shortcut_mapper {
-            let mut open = true;
-            egui::Window::new("Keyboard Shortcuts")
-                .open(&mut open)
-                .default_size([520.0, 480.0])
-                .show(ctx, |ui| {
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        egui::Grid::new("sc_grid")
-                            .striped(true)
-                            .num_columns(2)
-                            .show(ui, |ui| {
-                                ui.strong("Command");
-                                ui.strong("Shortcut");
-                                ui.end_row();
-                                let mut rows: Vec<(String, String)> = self
-                                    .shortcuts
-                                    .iter()
-                                    .map(|(c, s)| (format!("{c:?}"), s.label()))
-                                    .collect();
-                                rows.sort();
-                                for (c, s) in rows {
-                                    ui.label(c);
-                                    ui.monospace(s);
-                                    ui.end_row();
-                                }
-                            });
-                    });
-                });
-            if !open {
-                self.dialogs.shortcut_mapper = false;
             }
         }
 
         if let Some(mut st) = self.dialogs.column_editor.clone() {
             let mut open = true;
             let mut ok = false;
+            let mut cancel = false;
             egui::Window::new("Column Editor")
                 .open(&mut open)
                 .resizable(false)
+                .collapsible(false)
                 .show(ctx, |ui| {
-                    ui.radio_value(&mut st.text_mode, true, "Text to Insert");
-                    ui.add_enabled(st.text_mode, egui::TextEdit::singleline(&mut st.text));
-                    ui.separator();
-                    ui.radio_value(&mut st.text_mode, false, "Number to Insert");
+                    ui.label(
+                        RichText::new("Inserts on every line of the column selection or carets.")
+                            .weak(),
+                    );
+                    ui.add_space(4.0);
+                    ui.radio_value(&mut st.text_mode, true, "Text");
+                    ui.indent("col_text", |ui| {
+                        ui.add_enabled(
+                            st.text_mode,
+                            egui::TextEdit::singleline(&mut st.text).desired_width(240.0),
+                        );
+                    });
+                    ui.radio_value(&mut st.text_mode, false, "Numbers");
                     ui.add_enabled_ui(!st.text_mode, |ui| {
-                        egui::Grid::new("col_grid").show(ui, |ui| {
-                            ui.label("Initial number:");
-                            ui.text_edit_singleline(&mut st.initial);
+                        egui::Grid::new("col_grid").num_columns(2).show(ui, |ui| {
+                            let field = |ui: &mut Ui, v: &mut String| {
+                                ui.add(egui::TextEdit::singleline(v).desired_width(80.0));
+                            };
+                            ui.label("Start at:");
+                            field(ui, &mut st.initial);
                             ui.end_row();
-                            ui.label("Increase by:");
-                            ui.text_edit_singleline(&mut st.increase);
+                            ui.label("Step:");
+                            field(ui, &mut st.increase);
                             ui.end_row();
-                            ui.label("Repeat:");
-                            ui.text_edit_singleline(&mut st.repeat);
+                            ui.label("Repeat each:");
+                            field(ui, &mut st.repeat);
                             ui.end_row();
                         });
                         ui.horizontal(|ui| {
-                            ui.label("Leading:");
+                            ui.label("Pad with:");
                             ui.radio_value(&mut st.leading, LeadingMode::None, "None");
                             ui.radio_value(&mut st.leading, LeadingMode::Zeros, "Zeros");
                             ui.radio_value(&mut st.leading, LeadingMode::Spaces, "Spaces");
@@ -710,10 +648,19 @@ impl App {
                             ui.radio_value(&mut st.format, NumFormat::Bin, "Bin");
                         });
                     });
-                    if ui.button("OK").clicked() {
-                        ok = true;
-                    }
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Insert").clicked() {
+                            ok = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            cancel = true;
+                        }
+                    });
                 });
+            if cancel {
+                open = false;
+            }
             if ok {
                 let st2 = st.clone();
                 self.with_active(|d, v, _| {
@@ -762,7 +709,10 @@ impl App {
                 let d = self.docs.get(&id)?;
                 let v = self.views.get(&(self.focused, id));
                 let text = d.text();
-                let words = text.split(|c: char| !crate::ops::is_word_char(c)).filter(|w| !w.is_empty()).count();
+                let words = text
+                    .split(|c: char| !crate::ops::is_word_char(c))
+                    .filter(|w| !w.is_empty())
+                    .count();
                 let eol_chars: usize = text.chars().filter(|c| *c == '\n' || *c == '\r').count();
                 let (sel_chars, sel_bytes, sel_lines) = v.map_or((0, 0, 0), |v| {
                     let t = v.selected_texts(d);
@@ -774,72 +724,58 @@ impl App {
                 });
                 let meta = d.path.as_ref().and_then(|p| std::fs::metadata(p).ok());
                 let fmt_time = |t: Option<std::time::SystemTime>| {
-                    t.map(|t| chrono::DateTime::<chrono::Local>::from(t).format("%Y-%m-%d %H:%M:%S").to_string())
-                        .unwrap_or_default()
+                    t.map(|t| {
+                        chrono::DateTime::<chrono::Local>::from(t)
+                            .format("%Y-%m-%d %H:%M:%S")
+                            .to_string()
+                    })
+                    .unwrap_or_default()
                 };
-                Some(format!(
-                    "Full file path: {}\nCreated: {}\nModified: {}\n\nCharacters (without line endings): {}\nWords: {words}\nLines: {}\nDocument length: {} bytes ({} on disk)\n{sel_chars} selected characters ({sel_bytes} bytes) in {sel_lines} ranges",
-                    d.full_path_or_name(),
-                    fmt_time(meta.as_ref().and_then(|m| m.created().ok())),
-                    fmt_time(meta.as_ref().and_then(|m| m.modified().ok())),
-                    d.len_chars() - eol_chars,
-                    d.line_count(),
-                    text.len(),
-                    d.encoding.encode(&text).len(),
-                ))
+                let mut rows: Vec<(&str, String)> = vec![("Path", d.full_path_or_name())];
+                if let Some(m) = &meta {
+                    rows.push(("Created", fmt_time(m.created().ok())));
+                    rows.push(("Modified", fmt_time(m.modified().ok())));
+                }
+                rows.extend([
+                    ("Lines", d.line_count().to_string()),
+                    ("Words", words.to_string()),
+                    (
+                        "Characters",
+                        format!("{} (without line endings)", d.len_chars() - eol_chars),
+                    ),
+                    (
+                        "Size",
+                        format!(
+                            "{} bytes in memory, {} bytes as saved",
+                            text.len(),
+                            d.encoding.encode(&text).len()
+                        ),
+                    ),
+                    (
+                        "Selection",
+                        format!("{sel_chars} characters ({sel_bytes} bytes) on {sel_lines} lines"),
+                    ),
+                ]);
+                Some(rows)
             });
             egui::Window::new("Document Summary")
                 .open(&mut open)
                 .resizable(false)
+                .collapsible(false)
                 .show(ctx, |ui| {
-                    ui.label(info.unwrap_or_default());
+                    egui::Grid::new("summary_grid")
+                        .num_columns(2)
+                        .spacing([12.0, 4.0])
+                        .show(ui, |ui| {
+                            for (k, v) in info.unwrap_or_default() {
+                                ui.label(RichText::new(k).weak());
+                                ui.label(v);
+                                ui.end_row();
+                            }
+                        });
                 });
             if !open {
                 self.dialogs.summary = false;
-            }
-        }
-
-        if let Some(mut cmdline) = self.dialogs.run.clone() {
-            let mut open = true;
-            let mut run = false;
-            let mut save_name: Option<String> = None;
-            egui::Window::new("Run...").open(&mut open).resizable(false).show(ctx, |ui| {
-                ui.label("The Program to Run");
-                ui.horizontal(|ui| {
-                    ui.add(egui::TextEdit::singleline(&mut cmdline).desired_width(360.0));
-                    if ui.button("...").clicked()
-                        && let Some(p) = rfd::FileDialog::new().pick_file()
-                    {
-                        cmdline = format!("\"{}\"", p.display());
-                    }
-                });
-                ui.label(RichText::new("Variables: $(FULL_CURRENT_PATH) $(CURRENT_DIRECTORY) $(FILE_NAME) $(NAME_PART) $(EXT_PART) $(CURRENT_WORD) $(CURRENT_LINE) $(CURRENT_COLUMN) $(SYS.VAR)").small().weak());
-                ui.horizontal(|ui| {
-                    if ui.button("Run").clicked() {
-                        run = true;
-                    }
-                    if ui.button("Save...").clicked() {
-                        save_name = Some(cmdline.clone());
-                    }
-                    if ui.button("Cancel").clicked() {
-                        self.dialogs.run = None;
-                    }
-                });
-            });
-            if run {
-                let line = self.expand_vars(&cmdline);
-                if let Err(e) = crate::platform::run_shell(&line) {
-                    self.message("Run", &e.to_string());
-                }
-                self.dialogs.run = None;
-            } else if let Some(c) = save_name {
-                let name = c.chars().take(40).collect::<String>();
-                self.settings.run_commands.push((name, c));
-                self.dialogs.run = None;
-            } else if !open {
-                self.dialogs.run = None;
-            } else if self.dialogs.run.is_some() {
-                self.dialogs.run = Some(cmdline);
             }
         }
 
@@ -851,7 +787,15 @@ impl App {
                 .default_width(520.0)
                 .show(ctx, |ui| {
                     if !h.from_files {
-                        ui.checkbox(&mut h.each_line, "Treat each line as a separate string");
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("Text").strong());
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.checkbox(&mut h.each_line, "Hash each line separately");
+                                },
+                            );
+                        });
                         ui.add(
                             egui::TextEdit::multiline(&mut h.input)
                                 .desired_rows(6)
@@ -869,7 +813,8 @@ impl App {
                             textops::hex_digest(h.algo, h.input.as_bytes())
                         };
                     }
-                    ui.separator();
+                    ui.add_space(4.0);
+                    ui.label(RichText::new(h.algo.name()).strong());
                     let mut o = h.output.clone();
                     ui.add(
                         egui::TextEdit::multiline(&mut o)
@@ -877,7 +822,7 @@ impl App {
                             .desired_width(f32::INFINITY)
                             .font(egui::TextStyle::Monospace),
                     );
-                    if ui.button("Copy to clipboard").clicked() {
+                    if ui.button("Copy").clicked() {
                         copy = Some(h.output.clone());
                     }
                 });
@@ -902,9 +847,9 @@ impl App {
                                 .num_columns(4)
                                 .show(ui, |ui| {
                                     ui.strong("Name");
-                                    ui.strong("Path");
-                                    ui.strong("Type");
-                                    ui.strong("Size");
+                                    ui.strong("Folder");
+                                    ui.strong("Language");
+                                    ui.strong("Characters");
                                     ui.end_row();
                                     for (pi, p) in self.panes.iter().enumerate() {
                                         for id in &p.tabs {
@@ -937,17 +882,17 @@ impl App {
                         });
                     ui.horizontal(|ui| {
                         if let Some(id) = self.dialogs.windows_selected {
-                            if ui.button("Activate").clicked() {
+                            if ui.button("Go to Tab").clicked() {
                                 action = Some(("activate", id));
                             }
                             if ui.button("Save").clicked() {
                                 action = Some(("save", id));
                             }
-                            if ui.button("Close window(s)").clicked() {
+                            if ui.button("Close Tab").clicked() {
                                 action = Some(("close", id));
                             }
                         }
-                        if ui.button("Sort tabs").clicked() {
+                        if ui.button("Sort Tabs by Name").clicked() {
                             out.push(Command::SortTabs(crate::commands::TabSort::NameAsc));
                         }
                     });
@@ -980,20 +925,24 @@ impl App {
                 .open(&mut open)
                 .resizable(false)
                 .show(ctx, |ui| {
-                    ui.radio_value(&mut cr.range, 0, "Non-ASCII Characters (128-255)");
-                    ui.radio_value(&mut cr.range, 1, "ASCII Characters (0-127)");
+                    ui.radio_value(&mut cr.range, 0, "Non-ASCII (128-255)");
+                    ui.radio_value(&mut cr.range, 1, "ASCII (0-127)");
                     ui.horizontal(|ui| {
-                        ui.radio_value(&mut cr.range, 2, "My Range:");
+                        ui.radio_value(&mut cr.range, 2, "Custom:");
                         ui.add(egui::TextEdit::singleline(&mut cr.from).desired_width(60.0));
                         ui.label("-");
                         ui.add(egui::TextEdit::singleline(&mut cr.to).desired_width(60.0));
                     });
-                    ui.checkbox(&mut cr.backward, "Backward direction");
+                    ui.add_space(4.0);
+                    ui.checkbox(&mut cr.backward, "Search backward");
                     ui.checkbox(&mut cr.wrap, "Wrap around");
-                    if ui.button("Find").clicked() {
-                        find = true;
-                    }
-                    ui.label(cr.status.clone());
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Find Next").clicked() {
+                            find = true;
+                        }
+                        ui.label(RichText::new(cr.status.clone()).weak());
+                    });
                 });
             if find {
                 let range = match cr.range {
@@ -1052,18 +1001,29 @@ impl App {
         if let Some((id, mut name)) = self.dialogs.rename.clone() {
             let mut open = true;
             let mut ok = false;
+            let mut cancel = false;
             egui::Window::new("Rename")
                 .open(&mut open)
                 .resizable(false)
+                .collapsible(false)
                 .show(ctx, |ui| {
+                    ui.add(egui::TextEdit::singleline(&mut name).desired_width(280.0))
+                        .request_focus();
+                    ui.add_space(4.0);
                     ui.horizontal(|ui| {
-                        ui.label("New name:");
-                        ui.text_edit_singleline(&mut name).request_focus();
+                        if ui.button("Rename").clicked()
+                            || ui.input(|i| i.key_pressed(egui::Key::Enter))
+                        {
+                            ok = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            cancel = true;
+                        }
                     });
-                    if ui.button("OK").clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                        ok = true;
-                    }
                 });
+            if cancel {
+                open = false;
+            }
             if ok {
                 let mut err = None;
                 if let Some(d) = self.docs.get_mut(&id) {
@@ -1089,22 +1049,6 @@ impl App {
             } else {
                 self.dialogs.rename = open.then_some((id, name));
             }
-        }
-
-        if self.dialogs.about {
-            let mut open = true;
-            egui::Window::new(format!("About {APP_NAME}"))
-                .open(&mut open)
-                .resizable(false)
-                .collapsible(false)
-                .show(ctx, |ui| {
-                    ui.heading(format!("{APP_NAME} v{}", env!("CARGO_PKG_VERSION")));
-                    ui.label("A fast source code editor written in pure Rust.");
-                    ui.label("Runs on Windows and macOS (Apple Silicon & Intel).");
-                    ui.add_space(6.0);
-                    ui.label("License: MIT.");
-                });
-            self.dialogs.about = open;
         }
 
         if let Some(mut st) = self.dialogs.datetime.take() {
@@ -1268,74 +1212,61 @@ impl App {
             }
         }
 
-        if self.dialogs.command_line {
+        if let Some(mut generator) = self.dialogs.password.take() {
             let mut open = true;
-            egui::Window::new("Command Line Arguments").open(&mut open).resizable(false).show(ctx, |ui| {
-                ui.monospace(format!(
-                    "{APP_NAME} [--help] [-multiInst] [-nosession] [-ro] [-alwaysOnTop]\n           [-l<Language>] [-n<line>] [-c<column>] [filePath ...]\n\n\
-                     -multiInst    : Launch another instance\n\
-                     -nosession    : Launch without previous session\n\
-                     -ro           : Make the file read only\n\
-                     -alwaysOnTop  : Make the window always on top\n\
-                     -l<lang>      : Language to set (e.g. -lcpp, -lpython)\n\
-                     -n<line>      : Scroll to the given line\n\
-                     -c<column>    : Move the caret to the given column\n\
-                     filePath      : File or folder name to open (absolute or relative)"
-                ));
-            });
-            self.dialogs.command_line = open;
-        }
-
-        if self.dialogs.debug_info {
-            let mut open = true;
-            let info = format!(
-                "{APP_NAME} v{}\nBuild: {} ({})\nOS: {} {}\nConfig dir: {}\nThemes: {}\nLanguages: {}\nOpen documents: {}",
-                env!("CARGO_PKG_VERSION"),
-                if cfg!(debug_assertions) {
-                    "debug"
-                } else {
-                    "release"
-                },
-                std::env::consts::ARCH,
-                std::env::consts::OS,
-                std::env::consts::FAMILY,
-                crate::config::config_dir().display(),
-                self.themes.themes.len(),
-                self.langs.langs.len(),
-                self.docs.len(),
-            );
-            let mut copy = false;
-            egui::Window::new("Debug Info")
+            let mut action = crate::password::PasswordAction::None;
+            egui::Window::new("Password Generator")
                 .open(&mut open)
                 .resizable(false)
-                .show(ctx, |ui| {
-                    ui.monospace(&info);
-                    if ui.button("Copy debug info into clipboard").clicked() {
-                        copy = true;
-                    }
-                });
-            if copy {
-                self.clip_set(&info);
+                .collapsible(false)
+                .show(ctx, |ui| action = generator.ui(ui));
+            match action {
+                crate::password::PasswordAction::Insert(p) => {
+                    self.with_active(|d, v, _| {
+                        crate::ops::insert_text(d, v, &p, crate::document::EditKind::Other)
+                    });
+                    self.request_focus_editor = true;
+                }
+                crate::password::PasswordAction::Close => {}
+                crate::password::PasswordAction::None if open => {
+                    self.dialogs.password = Some(generator);
+                }
+                crate::password::PasswordAction::None => {}
             }
-            self.dialogs.debug_info = open;
+        }
+
+        if let Some(mut picker) = self.dialogs.color_picker.take() {
+            let mut open = true;
+            let mut action = crate::colorpick::PickerAction::None;
+            picker.poll_sampler(ctx);
+            egui::Window::new("Color Picker")
+                .open(&mut open)
+                .resizable(false)
+                .collapsible(false)
+                .show(ctx, |ui| action = picker.ui(ui));
+            match action {
+                crate::colorpick::PickerAction::Insert(hex) => {
+                    self.with_active(|d, v, _| {
+                        crate::ops::insert_text(d, v, &hex, crate::document::EditKind::Other)
+                    });
+                    self.request_focus_editor = true;
+                }
+                crate::colorpick::PickerAction::Cancel => {}
+                crate::colorpick::PickerAction::None if open => {
+                    self.dialogs.color_picker = Some(picker);
+                }
+                crate::colorpick::PickerAction::None => {}
+            }
         }
     }
 
     #[allow(clippy::too_many_lines)]
-    fn preferences_ui(&mut self, ui: &mut Ui) {
-        let tabs = [
-            "General",
-            "Editing",
-            "New Document",
-            "Auto-Completion",
-            "Backup / Session",
-            "Searching",
-            "MISC.",
-            "Formatter",
-        ];
-        ui.horizontal(|ui| {
+    /// The Settings window: sections on the left, the chosen one on the right.
+    fn settings_ui(&mut self, ui: &mut Ui) {
+        ui.horizontal_top(|ui| {
             ui.vertical(|ui| {
-                for (i, t) in tabs.iter().enumerate() {
+                ui.set_width(170.0);
+                for (i, t) in SETTINGS_SECTIONS.iter().enumerate() {
                     if ui
                         .selectable_label(self.dialogs.pref_tab == i, *t)
                         .clicked()
@@ -1343,219 +1274,416 @@ impl App {
                         self.dialogs.pref_tab = i;
                     }
                 }
+                ui.add_space(20.0);
+                ui.label(
+                    RichText::new(format!(
+                        "{APP_NAME} {}\nMIT License",
+                        env!("CARGO_PKG_VERSION")
+                    ))
+                    .weak()
+                    .small(),
+                );
             });
             ui.separator();
             ui.vertical(|ui| {
-                let s = &mut self.settings;
-                match self.dialogs.pref_tab {
-                    0 => {
-                        ui.checkbox(&mut s.show_toolbar, "Show toolbar");
-                        ui.checkbox(&mut s.show_statusbar, "Show status bar");
-                        ui.checkbox(&mut s.show_tabbar, "Show tab bar");
-                        ui.checkbox(&mut s.tab_close_button, "Show close button on each tab");
-                        ui.checkbox(
-                            &mut s.double_click_close_tab,
-                            "Double click to close document",
-                        );
-                        ui.checkbox(
-                            &mut s.single_instance,
-                            "Single instance (open files in the running window)",
-                        );
-                        ui.horizontal(|ui| {
-                            ui.label("Recent files to remember:");
-                            ui.add(egui::DragValue::new(&mut s.recent_max).range(0..=30));
-                        });
-                    }
-                    1 => {
-                        ui.horizontal(|ui| {
-                            ui.label("Tab size:");
-                            ui.add(egui::DragValue::new(&mut s.tab_size).range(1..=16));
-                            ui.checkbox(&mut s.use_spaces, "Replace by space");
-                        });
-                        ui.checkbox(&mut s.auto_indent, "Auto-indent");
-                        ui.checkbox(&mut s.show_line_numbers, "Display line number");
-                        ui.checkbox(&mut s.show_bookmark_margin, "Display bookmark");
-                        ui.checkbox(&mut s.show_change_history, "Display change history");
-                        ui.checkbox(&mut s.show_fold_margin, "Display folding margin");
-                        ui.checkbox(
-                            &mut s.highlight_current_line,
-                            "Enable current line highlighting",
-                        );
-                        ui.checkbox(&mut s.brace_highlight, "Highlight matching braces");
-                        ui.checkbox(
-                            &mut s.multi_editing,
-                            "Enable Multi-Editing (Ctrl/⌘ + Mouse click)",
-                        );
-                        ui.checkbox(
-                            &mut s.copy_line_without_selection,
-                            "Enable Copy/Cut Line without selection",
-                        );
-                        ui.checkbox(&mut s.caret_blink, "Caret blink");
-                        ui.horizontal(|ui| {
-                            ui.label("Caret width:");
-                            ui.add(
-                                egui::DragValue::new(&mut s.caret_width)
-                                    .range(1.0..=4.0)
-                                    .speed(0.25),
-                            );
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label("Vertical edge column (0 = none):");
-                            ui.add(egui::DragValue::new(&mut s.edge_column).range(0..=500));
-                        });
-                    }
-                    2 => {
-                        ui.label("Line endings:");
-                        ui.horizontal(|ui| {
-                            ui.radio_value(
-                                &mut s.default_eol,
-                                crate::encoding::Eol::Crlf,
-                                "Windows (CR LF)",
-                            );
-                            ui.radio_value(
-                                &mut s.default_eol,
-                                crate::encoding::Eol::Lf,
-                                "Unix (LF)",
-                            );
-                            ui.radio_value(
-                                &mut s.default_eol,
-                                crate::encoding::Eol::Cr,
-                                "Macintosh (CR)",
-                            );
-                        });
-                        ui.label("Encoding:");
-                        for (k, l) in [
-                            ("ansi", "ANSI"),
-                            ("utf8", "UTF-8"),
-                            ("utf8bom", "UTF-8 with BOM"),
-                            ("utf16be", "UTF-16 Big Endian with BOM"),
-                            ("utf16le", "UTF-16 Little Endian with BOM"),
-                        ] {
-                            ui.radio_value(&mut s.default_encoding, k.to_string(), l);
-                        }
-                        ui.horizontal(|ui| {
-                            ui.label("Default language:");
-                            let cur = self
-                                .langs
-                                .by_name(&s.default_lang)
-                                .map(|i| self.langs.langs[i].display.clone())
-                                .unwrap_or_default();
-                            egui::ComboBox::from_id_salt("deflang")
-                                .selected_text(cur)
-                                .show_ui(ui, |ui| {
-                                    for l in &self.langs.langs {
-                                        ui.selectable_value(
-                                            &mut s.default_lang,
-                                            l.name.clone(),
-                                            l.display.clone(),
-                                        );
-                                    }
-                                });
-                        });
-                    }
-                    3 => {
-                        ui.checkbox(&mut s.auto_complete, "Enable auto-completion on each input");
-                        ui.horizontal(|ui| {
-                            ui.label("From");
-                            ui.add(
-                                egui::DragValue::new(&mut s.auto_complete_min_chars).range(1..=9),
-                            );
-                            ui.label("th character");
-                        });
-                        ui.separator();
-                        ui.label("Auto-Insert");
-                        ui.checkbox(&mut s.auto_close_brackets, "( ) [ ] { }");
-                        ui.checkbox(&mut s.auto_close_quotes, "\" \" ' '");
-                    }
-                    4 => {
-                        ui.checkbox(
-                            &mut s.remember_session,
-                            "Remember current session for next launch",
-                        );
-                        ui.checkbox(
-                            &mut s.backup_unsaved,
-                            "Enable session snapshot and periodic backup (keep unsaved changes)",
-                        );
-                        ui.checkbox(&mut s.backup_on_save, "Backup on save (file.ext.bak)");
-                        ui.separator();
-                        ui.label("File Status Auto-Detection");
-                        ui.checkbox(
-                            &mut s.file_monitoring,
-                            "Detect changes made by other programs",
-                        );
-                        ui.checkbox(&mut s.update_silently, "Update silently");
-                        ui.checkbox(
-                            &mut s.scroll_to_end_on_update,
-                            "Scroll to the last line after update",
-                        );
-                    }
-                    5 => {
-                        ui.checkbox(&mut s.smart_highlight, "Enable Smart Highlighting");
-                        ui.checkbox(&mut s.smart_match_case, "Smart highlighting: match case");
-                        ui.checkbox(
-                            &mut s.smart_whole_word,
-                            "Smart highlighting: match whole word only",
-                        );
-                        ui.horizontal(|ui| {
-                            ui.label("Search engine:");
-                            ui.text_edit_singleline(&mut s.search_engine);
-                        });
-                    }
-                    7 => {
-                        use crate::formatters::{XmlQuotes, XmlWhitespace};
-                        let f = &mut s.format;
-                        ui.label(RichText::new("Options for Tools > Format").strong());
-                        ui.horizontal(|ui| {
-                            ui.label("tabWidth:");
-                            ui.add(egui::DragValue::new(&mut f.tab_width).range(1..=8));
-                            ui.checkbox(&mut f.use_tabs, "useTabs");
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label("printWidth:");
-                            ui.add(egui::DragValue::new(&mut f.print_width).range(20..=400));
-                        });
-                        ui.separator();
-                        ui.label("JSON");
-                        ui.checkbox(
-                            &mut f.json_object_wrap_preserve,
-                            "objectWrap: preserve (keep one-line objects on one line)",
-                        );
-                        ui.separator();
-                        ui.label("XML");
-                        ui.horizontal(|ui| {
-                            ui.label("xmlWhitespaceSensitivity:");
-                            ui.radio_value(&mut f.xml_whitespace, XmlWhitespace::Strict, "strict");
-                            ui.radio_value(&mut f.xml_whitespace, XmlWhitespace::Ignore, "ignore");
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label("xmlQuoteAttributes:");
-                            ui.radio_value(&mut f.xml_quotes, XmlQuotes::Preserve, "preserve");
-                            ui.radio_value(&mut f.xml_quotes, XmlQuotes::Double, "double");
-                            ui.radio_value(&mut f.xml_quotes, XmlQuotes::Single, "single");
-                        });
-                        ui.checkbox(&mut f.xml_self_closing_space, "xmlSelfClosingSpace (<a />)");
-                        ui.checkbox(&mut f.xml_sort_attributes, "xmlSortAttributesByKey");
-                        ui.checkbox(&mut f.single_attribute_per_line, "singleAttributePerLine");
-                        ui.checkbox(&mut f.bracket_same_line, "bracketSameLine");
-                        if ui.button("Reset to defaults").clicked() {
-                            *f = crate::formatters::FormatOptions::default();
-                        }
-                    }
-                    _ => {
-                        ui.horizontal(|ui| {
-                            ui.label("Custom date/time format:");
-                            ui.text_edit_singleline(&mut s.date_time_format);
-                        });
-                        ui.label(crate::config::format_date(
-                            &s.date_time_format,
-                            chrono::Local::now(),
-                        ));
-                        ui.checkbox(&mut s.show_wrap_symbol, "Show wrap symbol");
-                        ui.checkbox(&mut s.smooth_scrolling, "Smooth scrolling");
-                    }
-                }
+                // A fixed size, so the window doesn't jump between sections.
+                ui.set_width(520.0);
+                ui.set_min_height(380.0);
+                ui.heading(
+                    SETTINGS_SECTIONS[self.dialogs.pref_tab.min(SETTINGS_SECTIONS.len() - 1)],
+                );
+                ui.add_space(4.0);
+                egui::ScrollArea::vertical()
+                    .max_height(420.0)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| self.settings_section(ui));
             });
         });
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn settings_section(&mut self, ui: &mut Ui) {
+        let group = |ui: &mut Ui, title: &str| {
+            ui.add_space(6.0);
+            ui.label(RichText::new(title).strong());
+        };
+        match self.dialogs.pref_tab {
+            settings_section::GENERAL => {
+                let s = &mut self.settings;
+                group(ui, "Window");
+                ui.checkbox(&mut s.show_toolbar, "Show toolbar");
+                ui.checkbox(&mut s.show_statusbar, "Show status bar");
+                ui.checkbox(
+                    &mut s.single_instance,
+                    "Open files in the running window (single instance)",
+                );
+                group(ui, "Tabs");
+                ui.checkbox(&mut s.show_tabbar, "Show tab bar");
+                ui.checkbox(&mut s.tab_close_button, "Show a close button on each tab");
+                ui.checkbox(
+                    &mut s.double_click_close_tab,
+                    "Double-click a tab to close it",
+                );
+                group(ui, "Other");
+                ui.horizontal(|ui| {
+                    ui.label("Recent files to remember:");
+                    ui.add(egui::DragValue::new(&mut s.recent_max).range(0..=30));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Web search URL:");
+                    ui.add(egui::TextEdit::singleline(&mut s.search_engine).desired_width(320.0));
+                });
+                ui.label(RichText::new("$(CURRENT_WORD) is replaced by the selected text.").weak());
+            }
+            settings_section::APPEARANCE => self.appearance_settings(ui),
+            settings_section::EDITING => {
+                let s = &mut self.settings;
+                group(ui, "Indentation");
+                ui.horizontal(|ui| {
+                    ui.label("Tab size:");
+                    ui.add(egui::DragValue::new(&mut s.tab_size).range(1..=16));
+                    ui.checkbox(&mut s.use_spaces, "Insert spaces instead of tabs");
+                });
+                ui.checkbox(&mut s.auto_indent, "Auto-indent new lines");
+                group(ui, "Margins");
+                ui.checkbox(&mut s.show_line_numbers, "Line numbers");
+                ui.checkbox(&mut s.show_bookmark_margin, "Bookmarks");
+                ui.checkbox(&mut s.show_change_history, "Change history");
+                ui.checkbox(&mut s.show_fold_margin, "Folding");
+                ui.horizontal(|ui| {
+                    ui.label("Vertical edge at column (0 = none):");
+                    ui.add(egui::DragValue::new(&mut s.edge_column).range(0..=500));
+                });
+                group(ui, "Highlighting");
+                ui.checkbox(&mut s.highlight_current_line, "Current line");
+                ui.checkbox(&mut s.brace_highlight, "Matching braces");
+                ui.checkbox(
+                    &mut s.smart_highlight,
+                    "Other occurrences of the selected word",
+                );
+                ui.indent("smart", |ui| {
+                    ui.add_enabled_ui(s.smart_highlight, |ui| {
+                        ui.checkbox(&mut s.smart_match_case, "Match case");
+                        ui.checkbox(&mut s.smart_whole_word, "Whole word only");
+                    });
+                });
+                group(ui, "Caret and selection");
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut s.caret_blink, "Blink");
+                    ui.label("Width:");
+                    ui.add(
+                        egui::DragValue::new(&mut s.caret_width)
+                            .range(1.0..=4.0)
+                            .speed(0.25),
+                    );
+                });
+                ui.checkbox(&mut s.multi_editing, "Ctrl/⌘ + click adds a caret");
+                ui.checkbox(
+                    &mut s.copy_line_without_selection,
+                    "Copy and cut the whole line when nothing is selected",
+                );
+                ui.checkbox(&mut s.smooth_scrolling, "Smooth scrolling");
+            }
+            settings_section::NEW_DOCUMENTS => {
+                let s = &mut self.settings;
+                group(ui, "Line endings");
+                ui.horizontal(|ui| {
+                    use crate::encoding::Eol;
+                    ui.radio_value(&mut s.default_eol, Eol::Crlf, "Windows (CR LF)");
+                    ui.radio_value(&mut s.default_eol, Eol::Lf, "Unix and macOS (LF)");
+                    ui.radio_value(&mut s.default_eol, Eol::Cr, "Classic Mac (CR)");
+                });
+                group(ui, "Encoding");
+                for (k, l) in [
+                    ("ansi", "ANSI"),
+                    ("utf8", "UTF-8"),
+                    ("utf8bom", "UTF-8 with BOM"),
+                    ("utf16be", "UTF-16 Big Endian with BOM"),
+                    ("utf16le", "UTF-16 Little Endian with BOM"),
+                ] {
+                    ui.radio_value(&mut s.default_encoding, k.to_string(), l);
+                }
+                group(ui, "Language");
+                let cur = self
+                    .langs
+                    .by_name(&s.default_lang)
+                    .map(|i| self.langs.langs[i].display.clone())
+                    .unwrap_or_default();
+                egui::ComboBox::from_id_salt("deflang")
+                    .selected_text(cur)
+                    .width(220.0)
+                    .show_ui(ui, |ui| {
+                        for l in &self.langs.langs {
+                            ui.selectable_value(
+                                &mut s.default_lang,
+                                l.name.clone(),
+                                l.display.clone(),
+                            );
+                        }
+                    });
+            }
+            settings_section::COMPLETION => {
+                let s = &mut self.settings;
+                group(ui, "Suggestions");
+                ui.checkbox(
+                    &mut s.auto_complete,
+                    "Suggest words and keywords while typing",
+                );
+                ui.add_enabled_ui(s.auto_complete, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("After");
+                        ui.add(egui::DragValue::new(&mut s.auto_complete_min_chars).range(1..=9));
+                        ui.label("characters");
+                    });
+                });
+                group(ui, "Insert the closing pair");
+                ui.checkbox(&mut s.auto_close_brackets, "Brackets: ( ) [ ] { }");
+                ui.checkbox(&mut s.auto_close_quotes, "Quotes: \" \" ' '");
+            }
+            settings_section::FILES => {
+                let s = &mut self.settings;
+                group(ui, "Session");
+                ui.checkbox(
+                    &mut s.remember_session,
+                    "Reopen the last session's files on start",
+                );
+                ui.checkbox(
+                    &mut s.backup_unsaved,
+                    "Keep unsaved changes between sessions (backup every 3 s)",
+                );
+                ui.checkbox(&mut s.backup_on_save, "Keep a .bak copy when saving");
+                group(ui, "Changes made by other programs");
+                ui.checkbox(&mut s.file_monitoring, "Detect them");
+                ui.add_enabled_ui(s.file_monitoring, |ui| {
+                    ui.checkbox(&mut s.update_silently, "Reload without asking");
+                    ui.checkbox(
+                        &mut s.scroll_to_end_on_update,
+                        "Scroll to the end after reloading",
+                    );
+                });
+                group(ui, "Inserted date and time");
+                ui.horizontal(|ui| {
+                    ui.label("Custom format:");
+                    ui.text_edit_singleline(&mut s.date_time_format);
+                });
+                ui.label(
+                    RichText::new(format!(
+                        "Example: {}",
+                        crate::config::format_date(&s.date_time_format, chrono::Local::now())
+                    ))
+                    .weak(),
+                );
+            }
+            settings_section::FORMATTING => {
+                use crate::formatters::{XmlQuotes, XmlWhitespace};
+                let f = &mut self.settings.format;
+                ui.label(RichText::new("Used by Tools > Format.").weak());
+                group(ui, "All formats");
+                ui.horizontal(|ui| {
+                    ui.label("Indent width:");
+                    ui.add(egui::DragValue::new(&mut f.tab_width).range(1..=8));
+                    ui.checkbox(&mut f.use_tabs, "Indent with tabs");
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Line width:");
+                    ui.add(egui::DragValue::new(&mut f.print_width).range(20..=400));
+                });
+                group(ui, "JSON");
+                ui.checkbox(
+                    &mut f.json_object_wrap_preserve,
+                    "Keep one-line objects on one line",
+                );
+                group(ui, "XML");
+                ui.horizontal(|ui| {
+                    ui.label("Whitespace:");
+                    ui.radio_value(&mut f.xml_whitespace, XmlWhitespace::Strict, "Keep");
+                    ui.radio_value(&mut f.xml_whitespace, XmlWhitespace::Ignore, "Ignore");
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Attribute quotes:");
+                    ui.radio_value(&mut f.xml_quotes, XmlQuotes::Preserve, "Keep");
+                    ui.radio_value(&mut f.xml_quotes, XmlQuotes::Double, "Double");
+                    ui.radio_value(&mut f.xml_quotes, XmlQuotes::Single, "Single");
+                });
+                ui.checkbox(&mut f.xml_self_closing_space, "Space before />");
+                ui.checkbox(&mut f.xml_sort_attributes, "Sort attributes by name");
+                ui.checkbox(&mut f.single_attribute_per_line, "One attribute per line");
+                ui.checkbox(
+                    &mut f.bracket_same_line,
+                    "Keep > on the last attribute's line",
+                );
+                ui.add_space(6.0);
+                if ui.button("Reset to Defaults").clicked() {
+                    *f = crate::formatters::FormatOptions::default();
+                }
+            }
+            _ => self.shortcut_settings(ui),
+        }
+    }
+
+    /// Theme, fonts and interface size.
+    fn appearance_settings(&mut self, ui: &mut Ui) {
+        ui.add_space(6.0);
+        ui.label(RichText::new("Theme").strong());
+        let mut follow = self.settings.follow_system_theme;
+        ui.checkbox(&mut follow, "Match the system light/dark setting");
+        if follow != self.settings.follow_system_theme {
+            self.settings.follow_system_theme = follow;
+            if !follow {
+                // Keep showing what's on screen now.
+                self.settings.theme = self.themes.themes[self.theme_idx].name.clone();
+            }
+            let dark = self.system_dark;
+            self.follow_system_theme(dark);
+        }
+        let names: Vec<String> = self.themes.themes.iter().map(|t| t.name.clone()).collect();
+        let combo = |ui: &mut Ui, id: &str, label: &str, current: &str| -> Option<usize> {
+            let mut pick = None;
+            ui.horizontal(|ui| {
+                let (r, _) = ui.allocate_exact_size(egui::vec2(100.0, 18.0), egui::Sense::hover());
+                ui.put(r, egui::Label::new(label).halign(egui::Align::LEFT));
+                egui::ComboBox::from_id_salt(id)
+                    .selected_text(current)
+                    .width(200.0)
+                    .show_ui(ui, |ui| {
+                        for (i, n) in names.iter().enumerate() {
+                            if ui.selectable_label(n == current, n).clicked() {
+                                pick = Some(i);
+                            }
+                        }
+                    });
+            });
+            pick
+        };
+        if self.settings.follow_system_theme {
+            let (light, dark) = (
+                self.settings.theme.clone(),
+                self.settings.dark_theme.clone(),
+            );
+            if let Some(i) = combo(ui, "theme_light", "Light theme:", &light) {
+                self.settings.theme = names[i].clone();
+            }
+            if let Some(i) = combo(ui, "theme_dark", "Dark theme:", &dark) {
+                self.settings.dark_theme = names[i].clone();
+            }
+            let dark = self.system_dark;
+            self.follow_system_theme(dark);
+        } else {
+            let current = names[self.theme_idx].clone();
+            if let Some(i) = combo(ui, "theme", "Theme:", &current) {
+                self.set_theme(i);
+            }
+        }
+        ui.add_space(6.0);
+        ui.label(RichText::new("Size").strong());
+        ui.horizontal(|ui| {
+            let (r, _) = ui.allocate_exact_size(egui::vec2(100.0, 18.0), egui::Sense::hover());
+            ui.put(r, egui::Label::new("Font size:").halign(egui::Align::LEFT));
+            ui.add(
+                egui::DragValue::new(&mut self.settings.font_size)
+                    .range(6.0..=48.0)
+                    .speed(0.5)
+                    .suffix(" pt"),
+            );
+        });
+        ui.horizontal(|ui| {
+            let (r, _) = ui.allocate_exact_size(egui::vec2(100.0, 18.0), egui::Sense::hover());
+            ui.put(r, egui::Label::new("Interface:").halign(egui::Align::LEFT));
+            ui.add(
+                egui::DragValue::new(&mut self.settings.ui_scale)
+                    .range(0.6..=2.5)
+                    .speed(0.05)
+                    .suffix("×"),
+            );
+        });
+        ui.add_space(6.0);
+        ui.label(RichText::new("Preview").strong());
+        let g = &self.globals;
+        egui::Frame::NONE
+            .fill(g.bg)
+            .inner_margin(8.0)
+            .corner_radius(4.0)
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(
+                    RichText::new("fn main() { println!(\"The quick brown fox\"); }")
+                        .color(g.fg)
+                        .monospace(),
+                );
+                ui.horizontal_wrapped(|ui| {
+                    let swatch = |ui: &mut Ui, c: Color32, l: &str| {
+                        let (r, _) =
+                            ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
+                        ui.painter().rect_filled(r, 2.0, c);
+                        ui.label(RichText::new(l).color(g.fg).small());
+                        ui.add_space(6.0);
+                    };
+                    swatch(ui, g.current_line_bg, "Current line");
+                    swatch(ui, g.selection_bg, "Selection");
+                    swatch(ui, g.caret, "Caret");
+                    swatch(ui, g.smart_highlight, "Smart highlight");
+                    swatch(ui, g.find_mark, "Find mark");
+                    for (i, c) in g.mark_styles.iter().enumerate() {
+                        swatch(ui, *c, &format!("Highlight {}", i + 1));
+                    }
+                });
+            });
+    }
+
+    /// Every keyboard shortcut, named as in the menus, with a filter.
+    fn shortcut_settings(&mut self, ui: &mut Ui) {
+        if self.dialogs.shortcut_rows.is_none() {
+            let entries = self.menu_entries();
+            let mut rows: Vec<(String, String, String)> = self
+                .shortcuts
+                .iter()
+                .map(|(c, sc)| match entries.iter().find(|e| e.cmd == *c) {
+                    Some(e) => {
+                        let label = e.label.trim();
+                        // "1" under "Fold Level" reads as "Fold Level 1".
+                        match e.path.rsplit_once(" > ") {
+                            Some((parent, last)) if label.len() <= 2 => {
+                                (format!("{last} {label}"), parent.to_string(), sc.label())
+                            }
+                            _ => (label.to_string(), e.path.clone(), sc.label()),
+                        }
+                    }
+                    None => (format!("{c:?}"), String::new(), sc.label()),
+                })
+                .collect();
+            rows.sort();
+            self.dialogs.shortcut_rows = Some(rows);
+        }
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.dialogs.shortcut_filter)
+                    .hint_text("Filter by name or key")
+                    .desired_width(260.0),
+            );
+        });
+        ui.add_space(4.0);
+        let filter = self.dialogs.shortcut_filter.to_lowercase();
+        egui::Grid::new("sc_grid")
+            .striped(true)
+            .num_columns(2)
+            .min_col_width(110.0)
+            .spacing([12.0, 4.0])
+            .show(ui, |ui| {
+                for (name, path, key) in self.dialogs.shortcut_rows.iter().flatten() {
+                    let hay = format!("{name} {path} {key}").to_lowercase();
+                    if !filter.is_empty() && !hay.contains(&filter) {
+                        continue;
+                    }
+                    ui.monospace(key);
+                    ui.horizontal(|ui| {
+                        ui.label(name);
+                        if !path.is_empty() {
+                            ui.label(RichText::new(format!("in {path}")).weak().small());
+                        }
+                    });
+                    ui.end_row();
+                }
+            });
     }
 
     pub fn prompts_ui(&mut self, ctx: &Context) {

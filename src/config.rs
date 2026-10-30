@@ -67,6 +67,8 @@ pub struct Settings {
     pub single_instance: bool,
     pub show_function_list: bool,
     pub show_json_tree: bool,
+    /// The Find dialog is a panel at the bottom instead of a window.
+    pub find_docked: bool,
     pub show_doc_list: bool,
     pub show_folder_tree: bool,
     pub show_doc_map: bool,
@@ -80,7 +82,6 @@ pub struct Settings {
     pub fif_dirs: Vec<String>,
     pub fif_filters: Vec<String>,
     pub workspace_folders: Vec<String>,
-    pub run_commands: Vec<(String, String)>,
     pub smooth_scrolling: bool,
     pub virtual_space: bool,
     pub multi_editing: bool,
@@ -100,7 +101,7 @@ impl Default for Settings {
             tab_size: 4,
             use_spaces: false,
             auto_indent: true,
-            word_wrap: false,
+            word_wrap: true,
             syntax_highlighting: false,
             show_line_numbers: true,
             show_bookmark_margin: true,
@@ -138,18 +139,19 @@ impl Default for Settings {
             show_statusbar: true,
             show_tabbar: true,
             date_time_format: "yyyy-MM-dd HH:mm:ss".into(),
-            search_engine: "https://duckduckgo.com/?q=$(CURRENT_WORD)".into(),
+            search_engine: DEFAULT_SEARCH_ENGINE.into(),
             copy_line_without_selection: true,
             single_instance: true,
             show_function_list: false,
             show_json_tree: false,
+            find_docked: false,
             show_doc_list: false,
             show_folder_tree: false,
             show_doc_map: false,
             show_char_panel: false,
             show_clipboard_history: false,
-            sync_scroll_v: false,
-            sync_scroll_h: false,
+            sync_scroll_v: true,
+            sync_scroll_h: true,
             search_opts: SearchOptions {
                 wrap: true,
                 ..Default::default()
@@ -159,14 +161,6 @@ impl Default for Settings {
             fif_dirs: Vec::new(),
             fif_filters: vec!["*.*".into()],
             workspace_folders: Vec::new(),
-            run_commands: vec![(
-                "Open containing folder".into(),
-                if cfg!(windows) {
-                    "explorer \"$(CURRENT_DIRECTORY)\"".into()
-                } else {
-                    "open \"$(CURRENT_DIRECTORY)\"".into()
-                },
-            )],
             smooth_scrolling: true,
             virtual_space: false,
             multi_editing: true,
@@ -278,8 +272,16 @@ fn save_json_in<T: Serialize>(dir: &std::path::Path, name: &str, value: &T) {
     }
 }
 
+/// Web search for selected text; `$(CURRENT_WORD)` is replaced by the text.
+pub const DEFAULT_SEARCH_ENGINE: &str = "https://www.google.com/search?q=$(CURRENT_WORD)";
+
 pub fn load_settings() -> Settings {
-    load_json("config.json")
+    let mut s: Settings = load_json("config.json");
+    // Settings saved before Google became the default keep the old default.
+    if s.search_engine == "https://duckduckgo.com/?q=$(CURRENT_WORD)" {
+        s.search_engine = DEFAULT_SEARCH_ENGINE.into();
+    }
+    s
 }
 
 pub fn save_settings(s: &Settings) {

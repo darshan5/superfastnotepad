@@ -27,8 +27,6 @@ pub struct CompareOptions {
     pub detect_moves: bool,
     /// Hide the side panels while comparing, and show them again afterwards.
     pub hide_panels: bool,
-    /// Text matching this regex is ignored when comparing lines.
-    pub ignore_pattern: Option<String>,
 }
 
 impl Default for CompareOptions {
@@ -41,7 +39,6 @@ impl Default for CompareOptions {
             auto: true,
             detect_moves: true,
             hide_panels: true,
-            ignore_pattern: None,
         }
     }
 }
@@ -108,15 +105,11 @@ const MAX_INLINE_LINE: usize = 32 * 1024;
 
 static GENERATION: AtomicU64 = AtomicU64::new(1);
 
-fn normalize(line: &str, o: &CompareOptions, ignore: Option<&regex::Regex>) -> String {
-    let line = match ignore {
-        Some(re) => re.replace_all(line, ""),
-        None => std::borrow::Cow::Borrowed(line),
-    };
+fn normalize(line: &str, o: &CompareOptions) -> String {
     let s: String = if o.ignore_whitespace {
         line.chars().filter(|c| !c.is_whitespace()).collect()
     } else {
-        line.into_owned()
+        line.to_string()
     };
     if o.ignore_case { s.to_lowercase() } else { s }
 }
@@ -217,21 +210,8 @@ pub fn compare(
             MAX_BYTES / 1_000_000
         ));
     }
-    let ignore = match o.ignore_pattern.as_deref().filter(|p| !p.is_empty()) {
-        Some(p) => Some(
-            regex::Regex::new(p)
-                .map_err(|e| format!("The ignore pattern isn't a valid regex: {e}"))?,
-        ),
-        None => None,
-    };
-    let norm_l: Vec<String> = left
-        .iter()
-        .map(|l| normalize(l, o, ignore.as_ref()))
-        .collect();
-    let norm_r: Vec<String> = right
-        .iter()
-        .map(|l| normalize(l, o, ignore.as_ref()))
-        .collect();
+    let norm_l: Vec<String> = left.iter().map(|l| normalize(l, o)).collect();
+    let norm_r: Vec<String> = right.iter().map(|l| normalize(l, o)).collect();
     // Indices of the lines that take part in the diff.
     let keep = |norm: &[String]| -> Vec<usize> {
         (0..norm.len())
@@ -502,7 +482,7 @@ mod tests {
     }
 
     #[test]
-    fn moved_lines_and_ignore_pattern() {
+    fn moved_lines() {
         let a = lines("fn a() {}\nfn b() {}\nfn c() {}");
         let b = lines("fn b() {}\nfn c() {}\nfn a() {}");
         let r = compare(&a, &b, 1, 1, &CompareOptions::default()).unwrap();
@@ -515,18 +495,5 @@ mod tests {
         };
         let r = compare(&a, &b, 1, 1, &off).unwrap();
         assert_eq!((r.added, r.removed, r.moved), (1, 1, 0));
-        // Timestamps differ, but they're ignored.
-        let a = lines("10:00:01 start\n10:00:02 stop");
-        let b = lines("11:30:00 start\n11:30:09 stop");
-        let ts = CompareOptions {
-            ignore_pattern: Some(r"^\d\d:\d\d:\d\d".into()),
-            ..Default::default()
-        };
-        assert!(compare(&a, &b, 1, 1, &ts).unwrap().hunks.is_empty());
-        let bad = CompareOptions {
-            ignore_pattern: Some("(".into()),
-            ..Default::default()
-        };
-        assert!(compare(&a, &b, 1, 1, &bad).is_err());
     }
 }
