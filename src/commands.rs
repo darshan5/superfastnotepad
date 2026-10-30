@@ -77,6 +77,10 @@ pub enum Command {
     DateTimeTool,
     ColorPicker,
     PasswordGenerator,
+    /// Check GitHub for a newer release now (from Settings).
+    CheckForUpdates,
+    /// Open the newer release's download page.
+    OpenUpdatePage,
     /// Focus the menu search box on the toolbar.
     SearchMenus,
     Data(DataOp),

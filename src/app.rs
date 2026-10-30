@@ -235,6 +235,7 @@ pub struct App {
     pub goto_line_text: String,
     /// The menu search box on the toolbar.
     pub menu_search: crate::ui::MenuSearch,
+    pub update: crate::update::UpdateState,
     pub egui_ctx: Option<egui::Context>,
     pub request_focus_editor: bool,
     pub tab_drag: Option<(usize, usize)>,
@@ -361,6 +362,7 @@ impl App {
             pending_goto: None,
             goto_line_text: String::new(),
             menu_search: crate::ui::MenuSearch::default(),
+            update: crate::update::UpdateState::default(),
             egui_ctx: None,
             request_focus_editor: true,
             tab_drag: None,
@@ -1008,6 +1010,59 @@ impl App {
         session
     }
 
+    /// Starts a check for a newer release on GitHub. `manual` checks (from
+    /// Settings) report their result there.
+    pub fn start_update_check(&mut self, manual: bool) {
+        if self.update.job.is_some() {
+            self.update.manual |= manual;
+            return;
+        }
+        let ctx = self.egui_ctx.clone();
+        self.update.job = Some(crate::update::spawn_check(move || {
+            if let Some(ctx) = ctx {
+                ctx.request_repaint();
+            }
+        }));
+        self.update.manual = manual;
+        if manual {
+            self.update.status = Some("Checking...".into());
+        }
+    }
+
+    /// Starts the check at startup (once, if enabled) and picks up results.
+    fn poll_updates(&mut self) {
+        // Only the main window checks (extra windows run with -nosession),
+        // and never in tests.
+        if !self.update.started
+            && self.settings.check_for_updates
+            && !self.no_session
+            && !cfg!(test)
+            && self.egui_ctx.is_some()
+        {
+            self.update.started = true;
+            self.start_update_check(false);
+        }
+        let Some(rx) = &self.update.job else { return };
+        let Ok(result) = rx.try_recv() else { return };
+        self.update.job = None;
+        let manual = std::mem::take(&mut self.update.manual);
+        let status = match result {
+            Ok(Some(u)) => {
+                let s = format!("Version {} is available.", u.version);
+                self.update.available = Some(u);
+                s
+            }
+            Ok(None) => format!(
+                "You have the latest version ({}).",
+                crate::update::current_version()
+            ),
+            Err(e) => e,
+        };
+        if manual {
+            self.update.status = Some(status);
+        }
+    }
+
     pub fn save_all_state(&mut self) {
         if self.settings.remember_session && !self.no_session {
             let backups = self.settings.backup_unsaved;
@@ -1107,6 +1162,7 @@ impl App {
 
     /// Polls background work: find-in-files, single-instance IPC, file monitoring.
     pub fn poll(&mut self, now: f64) {
+        self.poll_updates();
         #[cfg(target_os = "macos")]
         {
             let files = crate::platform::finder::take();
@@ -2414,6 +2470,15 @@ impl App {
             Command::SearchMenus => {
                 self.settings.show_toolbar = true;
                 self.menu_search.focus = true;
+            }
+            Command::CheckForUpdates => self.start_update_check(true),
+            Command::OpenUpdatePage => {
+                let url = self
+                    .update
+                    .available
+                    .as_ref()
+                    .map_or_else(crate::update::releases_page, |u| u.url.clone());
+                crate::platform::open_with_default_app(&url);
             }
             Command::PasswordGenerator => {
                 self.dialogs.password = Some(crate::password::PasswordGenerator::new());

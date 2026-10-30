@@ -533,6 +533,11 @@ impl App {
     fn menu_bar(&mut self, ui: &mut Ui, out: &mut Vec<Command>) {
         use Command as C;
         sub(ui, true, false, "File", |ui| {
+            if let Some(u) = &self.update.available {
+                let label = format!("Update Available (v{})...", u.version);
+                self.item(ui, &label, C::OpenUpdatePage, out);
+                ui.separator();
+            }
             self.items(
                 ui,
                 &[
@@ -2995,6 +3000,69 @@ mod bench {
             app.run(cmd);
             assert_eq!(app.clip.text, want);
         }
+    }
+
+    /// A finished update check that found a newer release adds "Update
+    /// Available" to the File menu and reports it in Settings.
+    #[test]
+    fn update_available_shows_in_file_menu() {
+        let dir = std::env::temp_dir().join("superfastnotepad-update-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _config = use_config_dir(dir.join("cfg"));
+        let mut app = App::new(StartupArgs {
+            files: Vec::new(),
+            line: None,
+            column: None,
+            lang: None,
+            no_session: false,
+            read_only: false,
+            always_on_top: false,
+            take: None,
+        });
+        assert!(app.settings.check_for_updates, "on by default");
+        let has_item = |app: &mut App| {
+            app.menu_entries()
+                .iter()
+                .any(|e| e.cmd == crate::commands::Command::OpenUpdatePage)
+        };
+        assert!(!has_item(&mut app));
+        // Tests never start the real check (no network).
+        app.poll(0.0);
+        assert!(app.update.job.is_none());
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(Ok(Some(crate::update::Update {
+            version: "9.0.0".into(),
+            url: "https://example.com/release".into(),
+        })))
+        .unwrap();
+        app.update.job = Some(rx);
+        app.update.manual = true;
+        app.poll(0.0);
+        assert_eq!(app.update.available.as_ref().unwrap().version, "9.0.0");
+        assert_eq!(
+            app.update.status.as_deref(),
+            Some("Version 9.0.0 is available.")
+        );
+        let entries = app.menu_entries();
+        let item = entries
+            .iter()
+            .find(|e| e.cmd == crate::commands::Command::OpenUpdatePage)
+            .expect("Update Available in the File menu");
+        assert_eq!(item.label, "Update Available (v9.0.0)...");
+        assert_eq!(item.path, "File");
+        // Up to date.
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(Ok(None)).unwrap();
+        app.update.job = Some(rx);
+        app.update.manual = true;
+        app.poll(0.0);
+        assert_eq!(
+            app.update.status,
+            Some(format!(
+                "You have the latest version ({}).",
+                crate::update::current_version()
+            ))
+        );
     }
 
     /// Many tabs: the bar draws with the tab list button and the active tab

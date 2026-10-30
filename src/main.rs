@@ -29,6 +29,7 @@ mod search;
 mod textops;
 mod theme;
 mod ui;
+mod update;
 
 use std::sync::Arc;
 

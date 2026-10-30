@@ -40,7 +40,7 @@ The release build uses the GUI subsystem on Windows, so no console window opens.
 | **Panels** | Function List (20 languages, background scan), JSON Tree (jump to source, copy JSON pointer/key/value), Document Map (with compare markers), Document List, Workspace, Character Panel, Clipboard History |
 | **Compare** | Side by side with aligned spacer rows, or inline in one pane. Added/removed/changed/moved lines and changed words, scrollbar and Document Map markers. Compare two views, a tab with the next, selected lines, the clipboard, the last save, or a blank Original/Changed pair. Ignore whitespace, case or empty lines; swap sides; copy one or all differences left/right; side panels hidden while comparing |
 | **Tools** | Format: JSON, XML, HTML, CSS, JavaScript/TypeScript, Markdown (pretty print; minify for JSON/XML/CSS). Encode/Decode: Base64, URL, Quoted-printable. Data: CSV↔JSON, CSV↔TSV. Hash: MD5, SHA-1, SHA-256, SHA-512. Date and Unix Time: live clock, date picker to Unix time and back. Color Picker: saturation/brightness square, hue strip, RGB/hex/CMYK, eyedropper for any pixel on screen; inserts `#RRGGBB`. Password Generator: 4–64 characters from the OS secure random source, optional numbers and symbols |
-| **Other** | Six built-in themes (Light, Dark, Midnight, Paper, Forest, High Contrast) that can follow the OS light/dark setting, one Settings window (general, appearance, editing, new documents, completion, files, formatting, keyboard shortcuts), tab colours and pinning, a searchable list of all tabs at the end of the tab bar, a tab menu with Open in Finder/Explorer, Terminal, the default app or the default browser |
+| **Other** | Six built-in themes (Light, Dark, Midnight, Paper, Forest, High Contrast) that can follow the OS light/dark setting, one Settings window (general, appearance, editing, new documents, completion, files, formatting, keyboard shortcuts), tab colours and pinning, an update check at startup (File > Update Available when there's a newer release; can be turned off or run by hand in Settings > General), a searchable list of all tabs at the end of the tab bar, a tab menu with Open in Finder/Explorer, Terminal, the default app or the default browser |
 
 Command line: `superfastnotepad [-multiInst] [-nosession] [--session-dir <folder>] [-ro] [-alwaysOnTop] [-l<lang>] [-n<line>] [-c<col>] [files or folders...]`
 
@@ -86,6 +86,7 @@ src/
   calltip.rs        call tips from the file's own definitions
   colorpick.rs      color picker and eyedropper
   password.rs       password generator
+  update.rs         update checker (latest GitHub release)
   compare.rs        diff engine (alignment, word-level changes, moved lines)
   compare_ui.rs     compare session: panes, navigation, copy left/right
   encoding.rs       encoding detection and conversion

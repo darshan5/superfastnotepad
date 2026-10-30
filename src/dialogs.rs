@@ -1324,6 +1324,37 @@ impl App {
                     &mut s.double_click_close_tab,
                     "Double-click a tab to close it",
                 );
+                group(ui, "Updates");
+                ui.checkbox(
+                    &mut s.check_for_updates,
+                    "Check for a new version when the app starts",
+                );
+                let checking = self.update.job.is_some();
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled(!checking, egui::Button::new("Check Now"))
+                        .clicked()
+                    {
+                        self.run(Command::CheckForUpdates);
+                    }
+                    if let Some(status) = &self.update.status {
+                        ui.label(RichText::new(status).weak());
+                    }
+                });
+                if let Some(u) = self.update.available.clone()
+                    && ui.link(format!("Download version {}", u.version)).clicked()
+                {
+                    self.run(Command::OpenUpdatePage);
+                }
+                ui.label(
+                    RichText::new(format!(
+                        "This is version {}. A check asks GitHub which release is the latest, sending only the app's name and version.",
+                        crate::update::current_version()
+                    ))
+                    .weak()
+                    .small(),
+                );
+                let s = &mut self.settings;
                 group(ui, "Other");
                 ui.horizontal(|ui| {
                     ui.label("Recent files to remember:");

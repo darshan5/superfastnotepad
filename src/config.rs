@@ -69,6 +69,8 @@ pub struct Settings {
     pub show_json_tree: bool,
     /// The Find dialog is a panel at the bottom instead of a window.
     pub find_docked: bool,
+    /// Look for a newer release on GitHub when the app starts.
+    pub check_for_updates: bool,
     pub show_doc_list: bool,
     pub show_folder_tree: bool,
     pub show_doc_map: bool,
@@ -145,6 +147,7 @@ impl Default for Settings {
             show_function_list: false,
             show_json_tree: false,
             find_docked: false,
+            check_for_updates: true,
             show_doc_list: false,
             show_folder_tree: false,
             show_doc_map: false,
