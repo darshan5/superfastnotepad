@@ -2,8 +2,9 @@
 # and macOS (Apple Silicon).
 #
 # Run it from the Actions tab ("Release" > "Run workflow"), optionally with a
-# version; it defaults to the version in Cargo.toml. Pushing a `v*` tag runs
-# it too. The release is left as a draft to review and publish by hand.
+# version; it defaults to the version in Cargo.toml. If that tag already
+# exists it's built again (to retry a failed release). Pushing a `v*` tag
+# runs it too. The release is left as a draft to review and publish by hand.
 name: Release
 
 on:
@@ -44,11 +45,12 @@ jobs:
           fi
           tag="v$version"
           if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
-            echo "::error::Tag $tag already exists"
-            exit 1
+            # Retrying a release: build the existing tag again.
+            echo "::notice::Tag $tag already exists; building it again"
+          else
+            git tag "$tag"
+            git push origin "$tag"
           fi
-          git tag "$tag"
-          git push origin "$tag"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
   build:
@@ -57,7 +59,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
+          - os: macos-15
             target: aarch64-apple-darwin
             asset: macos-apple-silicon
           - os: windows-latest
