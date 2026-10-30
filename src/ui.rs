@@ -3065,6 +3065,32 @@ mod bench {
         );
     }
 
+    /// Syntax highlighting at startup follows the Settings option, not how
+    /// the toolbar toggle was left; older settings files keep the toggle.
+    #[test]
+    fn highlighting_on_start_setting() {
+        let dir = std::env::temp_dir().join("superfastnotepad-hl-start-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let _config = use_config_dir(&dir);
+        let load = |json: &str| {
+            std::fs::write(dir.join("config.json"), json).unwrap();
+            let s = crate::config::load_settings();
+            (s.highlight_on_start, s.syntax_highlighting)
+        };
+        assert_eq!(load("{}"), (false, false));
+        assert_eq!(
+            load(r#"{"highlight_on_start": true, "syntax_highlighting": false}"#),
+            (true, true)
+        );
+        assert_eq!(
+            load(r#"{"highlight_on_start": false, "syntax_highlighting": true}"#),
+            (false, false)
+        );
+        // Saved before the option existed: start the way the toggle was left.
+        assert_eq!(load(r#"{"syntax_highlighting": true}"#), (true, true));
+    }
+
     /// Many tabs: the bar draws with the tab list button and the active tab
     /// is scrolled into view.
     #[test]

@@ -1386,6 +1386,10 @@ impl App {
                     ui.add(egui::DragValue::new(&mut s.edge_column).range(0..=500));
                 });
                 group(ui, "Highlighting");
+                ui.checkbox(
+                    &mut s.highlight_on_start,
+                    "Turn on syntax highlighting when the app starts",
+                );
                 ui.checkbox(&mut s.highlight_current_line, "Current line");
                 ui.checkbox(&mut s.brace_highlight, "Matching braces");
                 ui.checkbox(

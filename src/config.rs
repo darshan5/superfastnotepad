@@ -23,8 +23,11 @@ pub struct Settings {
     pub use_spaces: bool,
     pub auto_indent: bool,
     pub word_wrap: bool,
-    /// Colour code by language. Off by default: plain text is the fastest view.
+    /// Colour code by language (the toolbar toggle; for this run).
     pub syntax_highlighting: bool,
+    /// Turn syntax highlighting on when the app starts. Off by default:
+    /// plain text is the fastest view.
+    pub highlight_on_start: bool,
     pub show_line_numbers: bool,
     pub show_bookmark_margin: bool,
     pub show_fold_margin: bool,
@@ -105,6 +108,7 @@ impl Default for Settings {
             auto_indent: true,
             word_wrap: true,
             syntax_highlighting: false,
+            highlight_on_start: false,
             show_line_numbers: true,
             show_bookmark_margin: true,
             show_fold_margin: true,
@@ -278,12 +282,26 @@ fn save_json_in<T: Serialize>(dir: &std::path::Path, name: &str, value: &T) {
 /// Web search for selected text; `$(CURRENT_WORD)` is replaced by the text.
 pub const DEFAULT_SEARCH_ENGINE: &str = "https://www.google.com/search?q=$(CURRENT_WORD)";
 
+impl Settings {
+    /// Highlighting at startup follows `highlight_on_start`.
+    pub fn apply_startup_highlighting(&mut self) {
+        self.syntax_highlighting = self.highlight_on_start;
+    }
+}
+
 pub fn load_settings() -> Settings {
     let mut s: Settings = load_json("config.json");
     // Settings saved before Google became the default keep the old default.
     if s.search_engine == "https://duckduckgo.com/?q=$(CURRENT_WORD)" {
         s.search_engine = DEFAULT_SEARCH_ENGINE.into();
     }
+    // Settings saved before the startup option existed start the way the
+    // toggle was left.
+    let saved = std::fs::read_to_string(config_dir().join("config.json")).unwrap_or_default();
+    if !saved.contains("\"highlight_on_start\"") {
+        s.highlight_on_start = s.syntax_highlighting;
+    }
+    s.apply_startup_highlighting();
     s
 }
 
@@ -370,5 +388,6 @@ mod tests {
         // Settings files saved before the option existed also load with it off.
         let s: Settings = serde_json::from_str("{\"tab_size\": 4}").unwrap();
         assert!(!s.syntax_highlighting);
+        assert!(!s.highlight_on_start);
     }
 }
