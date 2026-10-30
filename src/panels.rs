@@ -3,12 +3,14 @@
 //! clipboard history.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use egui::{Color32, CornerRadius, RichText, Sense, Ui, text::LayoutJob};
 
 use crate::app::App;
 use crate::commands::Command;
 use crate::document::{EditKind, Selection};
+use crate::function_list::FoundItem;
 
 const ASCII_NAMES: [&str; 33] = [
     "NUL", "SOH", "STX", "ETX", "EOT", "ENQ", "ACK", "BEL", "BS", "TAB", "LF", "VT", "FF", "CR",
@@ -480,19 +482,53 @@ impl App {
             return;
         };
         let lang = self.langs.langs[doc.lang].name.clone();
-        let stale =
-            !matches!(&self.func_cache, Some((cid, v, _)) if *cid == id && *v == doc.version);
-        if stale {
-            let text = doc.text();
-            let items = if self.function_lists.has_parser(&lang) && text.len() < 20_000_000 {
-                self.function_lists.parse(&lang, &text)
-            } else {
-                Vec::new()
-            };
-            self.func_cache = Some((id, doc.version, items));
+        // Parsing a big file takes a noticeable fraction of a second, so it
+        // runs on a background thread; the list shows the previous result
+        // for this document until the new one arrives.
+        if let Some((jid, jv, rx)) = &self.func_job
+            && let Ok(items) = rx.try_recv()
+        {
+            self.func_cache = Some((*jid, *jv, items));
+            self.func_job = None;
         }
-        let Some((_, _, items)) = &self.func_cache else {
-            return;
+        let up_to_date =
+            matches!(&self.func_cache, Some((cid, v, _)) if *cid == id && *v == doc.version);
+        // Re-scan only once typing has paused, so each keystroke doesn't copy
+        // the whole document for a scan that is about to be outdated.
+        const SETTLE: f64 = 0.3;
+        let now = ui.input(|i| i.time);
+        if (self.func_seen.0, self.func_seen.1) != (id, doc.version) {
+            self.func_seen = (id, doc.version, now);
+        }
+        let has_old = matches!(&self.func_cache, Some((cid, _, _)) if *cid == id);
+        let settled = !has_old || now - self.func_seen.2 >= SETTLE;
+        if !up_to_date && self.func_job.is_none() && !settled {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_secs_f64(
+                    SETTLE - (now - self.func_seen.2),
+                ));
+        }
+        if !up_to_date && self.func_job.is_none() && settled {
+            let text = doc.text();
+            if self.function_lists.has_parser(&lang) && text.len() < 20_000_000 {
+                let (tx, rx) = std::sync::mpsc::channel();
+                let fl = Arc::clone(&self.function_lists);
+                let ctx = self.egui_ctx.clone();
+                let lang = lang.clone();
+                std::thread::spawn(move || {
+                    let _ = tx.send(fl.parse(&lang, &text));
+                    if let Some(c) = ctx {
+                        c.request_repaint();
+                    }
+                });
+                self.func_job = Some((id, doc.version, rx));
+            } else {
+                self.func_cache = Some((id, doc.version, Vec::new()));
+            }
+        }
+        let items: &[FoundItem] = match &self.func_cache {
+            Some((cid, _, items)) if *cid == id => items,
+            _ => &[],
         };
         let caret_line = self
             .views
@@ -500,53 +536,86 @@ impl App {
             .map_or(0, |v| doc.char_to_line(v.primary().head));
         let current = items.iter().rposition(|i| i.line <= caret_line);
         let filter = self.func_filter.to_lowercase();
+        // Flatten into rows (class headers, then their items) so only the
+        // visible rows are laid out: big files have thousands of entries.
+        enum Row<'a> {
+            Header(&'a str),
+            Item(usize),
+        }
+        let mut classes: Vec<Option<&str>> = Vec::new();
+        for it in items {
+            if !classes.contains(&it.class.as_deref()) {
+                classes.push(it.class.as_deref());
+            }
+        }
+        let mut rows = Vec::new();
+        for class in classes {
+            let matching = items.iter().enumerate().filter(|(_, it)| {
+                it.class.as_deref() == class
+                    && (filter.is_empty() || it.name.to_lowercase().contains(&filter))
+            });
+            if let Some(c) = class {
+                rows.push(Row::Header(c));
+                if self.func_collapsed.contains(c) {
+                    continue;
+                }
+            }
+            rows.extend(matching.map(|(i, _)| Row::Item(i)));
+        }
         let mut jump = None;
+        let mut toggle: Option<String> = None;
+        let row_h =
+            ui.text_style_height(&egui::TextStyle::Body) + ui.spacing().item_spacing.y + 2.0;
+        if items.is_empty() {
+            ui.label(
+                RichText::new(if self.func_job.is_some() {
+                    "Scanning..."
+                } else if self.function_lists.has_parser(&lang) {
+                    "No functions found"
+                } else {
+                    "No function list parser for this language"
+                })
+                .weak(),
+            );
+        }
         egui::ScrollArea::vertical()
             .id_salt("funclist")
             .max_height(height)
             .auto_shrink([false, true])
-            .show(ui, |ui| {
-                if items.is_empty() {
-                    ui.label(
-                        RichText::new(if self.function_lists.has_parser(&lang) {
-                            "No functions found"
-                        } else {
-                            "No function list parser for this language"
-                        })
-                        .weak(),
-                    );
-                }
-                let mut classes: Vec<Option<String>> = Vec::new();
-                for it in items {
-                    if !classes.contains(&it.class) {
-                        classes.push(it.class.clone());
-                    }
-                }
-                for class in classes {
-                    let mut body = |ui: &mut Ui| {
-                        for (i, it) in items.iter().enumerate().filter(|(_, it)| it.class == class)
-                        {
-                            if !filter.is_empty() && !it.name.to_lowercase().contains(&filter) {
-                                continue;
+            .show_rows(ui, row_h, rows.len(), |ui, range| {
+                // One line per row, or the row height estimate goes wrong.
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+                for row in &rows[range] {
+                    match *row {
+                        Row::Header(c) => {
+                            let open = !self.func_collapsed.contains(c);
+                            let label = format!("{} {c}", if open { "[-]" } else { "[+]" });
+                            if ui
+                                .selectable_label(false, RichText::new(label).strong())
+                                .clicked()
+                            {
+                                toggle = Some(c.to_string());
                             }
-                            let r =
-                                ui.selectable_label(current == Some(i), format!("ƒ {}", it.name));
+                        }
+                        Row::Item(i) => {
+                            let it = &items[i];
+                            let indent = if it.class.is_some() { "    " } else { "" };
+                            let r = ui.selectable_label(
+                                current == Some(i),
+                                format!("{indent}ƒ {}", it.name),
+                            );
                             if r.clicked() {
                                 jump = Some(it.line);
                             }
                         }
-                    };
-                    match &class {
-                        Some(c) => {
-                            egui::CollapsingHeader::new(RichText::new(c.to_string()).strong())
-                                .id_salt(("fl", c))
-                                .default_open(true)
-                                .show(ui, body);
-                        }
-                        None => body(ui),
                     }
                 }
             });
+        if let Some(c) = toggle
+            && !self.func_collapsed.remove(&c)
+        {
+            self.func_collapsed.insert(c);
+        }
         if let Some(l) = jump {
             self.with_active(|d, v, _| {
                 d.ensure_line_visible(l);

@@ -120,6 +120,9 @@ pub struct ViewState {
     drag: Option<Drag>,
     last_press: Option<(f64, Pos2, u8)>,
     layout: LayoutCache,
+    /// Last brace match: ((doc version, caret), result). Recomputed only when
+    /// either changes; a match can span the whole document.
+    brace_cache: Option<BraceCache>,
     wrap_cols: usize,
     pub last_text_rect: Rect,
     /// This view's side of an active file compare.
@@ -147,12 +150,21 @@ impl Default for ViewState {
             drag: None,
             last_press: None,
             layout: LayoutCache::default(),
+            brace_cache: None,
             wrap_cols: 0,
             last_text_rect: Rect::NOTHING,
             compare: None,
         }
     }
 }
+
+/// ((document version, caret), matching brace pair) of the last lookup.
+type BraceCache = ((u64, usize), Option<(usize, usize)>);
+
+/// How far brace highlighting searches for the matching bracket (chars):
+/// about 0.25 ms per keystroke, enough for blocks a few thousand lines long.
+/// Go to Matching Brace still searches the whole document.
+const BRACE_HIGHLIGHT_LIMIT: usize = 100_000;
 
 /// Display columns of each char boundary in `line` (len = chars + 1).
 pub fn columns(line: &str, tab: usize) -> Vec<usize> {
@@ -888,7 +900,15 @@ pub fn show(
         .collect();
     let primary = vs.primary();
     let brace = if settings.brace_highlight && primary.is_empty() {
-        ops::matching_brace(doc, primary.head)
+        let key = (doc.version, primary.head);
+        match vs.brace_cache {
+            Some((k, r)) if k == key => r,
+            _ => {
+                let r = ops::matching_brace_within(doc, primary.head, BRACE_HIGHLIGHT_LIMIT);
+                vs.brace_cache = Some((key, r));
+                r
+            }
+        }
     } else {
         None
     };
@@ -1792,19 +1812,25 @@ pub fn open_autocomplete(
         );
     }
     if use_doc_words {
-        let text = doc.text();
-        let hay: &str = if text.len() > 4_000_000 {
-            &text[..4_000_000.min(text.len())]
-        } else {
-            &text
+        // Only the text around the caret: scanning a whole multi-megabyte
+        // file on every keystroke would cost more than a frame.
+        const WINDOW: usize = 256 * 1024;
+        let hay = doc.slice(
+            head.saturating_sub(WINDOW),
+            (head + WINDOW).min(doc.len_chars()),
+        );
+        let has_prefix = |w: &str| {
+            if prefix.is_ascii() {
+                w.as_bytes()
+                    .get(..prefix.len())
+                    .is_some_and(|h| h.eq_ignore_ascii_case(prefix.as_bytes()))
+            } else {
+                w.to_lowercase().starts_with(&lower)
+            }
         };
         let mut seen = std::collections::HashSet::new();
         for w in hay.split(|c: char| !ops::is_word_char(c)) {
-            if w.len() > prefix.len()
-                && w.to_lowercase().starts_with(&lower)
-                && w != prefix
-                && seen.insert(w)
-            {
+            if w.len() > prefix.len() && has_prefix(w) && w != prefix && seen.insert(w) {
                 items.push(w.to_string());
             }
             if seen.len() > 2000 {
@@ -2384,5 +2410,42 @@ mod tests {
         assert_eq!(wrap_breaks("hello world foo", 4, 11), vec![0, 12]);
         assert_eq!(wrap_breaks("abcdefghij", 4, 4), vec![0, 4, 8]);
         assert_eq!(wrap_breaks("short", 4, 80), vec![0]);
+    }
+}
+
+#[cfg(test)]
+mod bench {
+    use super::*;
+    use crate::document::{Document, EditKind};
+    use crate::langs::LangRegistry;
+    use std::time::Instant;
+
+    /// Cost of one keystroke plus the word-completion popup on a big file.
+    #[test]
+    #[ignore = "benchmark: BENCH_FILE=path cargo test --release typing_bench -- --ignored --nocapture"]
+    fn typing_bench() {
+        let path = std::env::var("BENCH_FILE").expect("BENCH_FILE");
+        let langs = LangRegistry::load();
+        let mut doc = Document::open(1, std::path::Path::new(&path), &langs, None).unwrap();
+        let mut vs = ViewState::default();
+        let mid = doc.line_start(doc.line_count() / 2);
+        vs.set_single(mid);
+        let (mut edit_t, mut ac_t) = (Vec::new(), Vec::new());
+        for c in "notifyX".chars() {
+            let head = vs.primary().head;
+            let t = Instant::now();
+            doc.edit(
+                vec![(head, head, c.to_string())],
+                &vs.sels,
+                EditKind::Typing,
+                |f| vec![Selection::caret(f[0].1)],
+            );
+            vs.set_single(head + 1);
+            edit_t.push(t.elapsed());
+            let t = Instant::now();
+            open_autocomplete(&mut vs, &doc, &[], true, false, 3, false);
+            ac_t.push(t.elapsed());
+        }
+        println!("edit per key: {edit_t:.2?}\nautocomplete per key: {ac_t:.2?}");
     }
 }

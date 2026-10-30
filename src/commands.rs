@@ -208,6 +208,7 @@ pub enum Command {
     MoveTabForward,
     MoveTabBackward,
     WordWrap,
+    SyntaxHighlighting,
     FocusOtherView,
     FoldAll,
     UnfoldAll,

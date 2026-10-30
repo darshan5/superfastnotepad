@@ -22,6 +22,7 @@ pub enum Icon {
     SyncV,
     SyncH,
     Wrap,
+    Highlight,
     AllChars,
     IndentGuide,
     DocMap,
@@ -313,6 +314,18 @@ pub fn draw(p: &Painter, rect: Rect, icon: Icon, fg: Color32) {
                 4.0,
                 fg,
             );
+        }
+        Icon::Highlight => {
+            // Three "lines of code" in different syntax colours.
+            let rows = [(blue, 0.55), (green, 0.9), (red, 0.4)];
+            for (i, (col, len)) in rows.iter().enumerate() {
+                #[allow(clippy::cast_precision_loss)]
+                let y = r.top() + 2.0 + i as f32 * (r.height() - 4.0) / 2.0;
+                p.line_segment(
+                    [pos2(r.left(), y), pos2(r.left() + w * len, y)],
+                    Stroke::new(2.5, *col),
+                );
+            }
         }
         Icon::AllChars => {
             p.text(

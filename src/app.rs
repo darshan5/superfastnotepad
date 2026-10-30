@@ -166,8 +166,14 @@ pub struct App {
     pub fif: Option<FifRunning>,
     pub dialogs: Dialogs,
     pub prompts: Vec<Prompt>,
-    pub function_lists: FunctionLists,
+    pub function_lists: Arc<FunctionLists>,
     pub func_cache: Option<(DocId, u64, Vec<FoundItem>)>,
+    /// Function List parse running on a background thread: (doc, version, result).
+    pub func_job: Option<(DocId, u64, std::sync::mpsc::Receiver<Vec<FoundItem>>)>,
+    /// Document version the Function List last saw, and when it changed.
+    pub func_seen: (DocId, u64, f64),
+    /// Classes collapsed in the Function List.
+    pub func_collapsed: HashSet<String>,
     pub func_filter: String,
     pub incremental: IncrementalState,
     pub status_msg: Option<(String, f64)>,
@@ -269,8 +275,11 @@ impl App {
             fif: None,
             dialogs: Dialogs::default(),
             prompts: Vec::new(),
-            function_lists: FunctionLists::new(),
+            function_lists: Arc::new(FunctionLists::new()),
             func_cache: None,
+            func_job: None,
+            func_seen: (0, 0, 0.0),
+            func_collapsed: HashSet::new(),
             func_filter: String::new(),
             incremental: IncrementalState::default(),
             status_msg: None,
@@ -2334,6 +2343,9 @@ impl App {
                 }
             }
             Command::WordWrap => self.settings.word_wrap = !self.settings.word_wrap,
+            Command::SyntaxHighlighting => {
+                self.settings.syntax_highlighting = !self.settings.syntax_highlighting;
+            }
             Command::FocusOtherView => {
                 if !self.panes[1 - pane].tabs.is_empty() {
                     self.focused = 1 - pane;

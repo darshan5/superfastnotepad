@@ -716,8 +716,16 @@ pub fn convert_eol(doc: &mut Document, vs: &mut ViewState, eol: Eol) {
     doc.force_dirty |= doc.is_dirty();
 }
 
-/// Finds the bracket matching the one at/before `pos`.
+/// Finds the bracket matching the one at/before `pos`, searching the whole
+/// document. An unmatched bracket returns `(pos, usize::MAX)`.
 pub fn matching_brace(doc: &Document, pos: usize) -> Option<(usize, usize)> {
+    matching_brace_within(doc, pos, usize::MAX)
+}
+
+/// Like `matching_brace`, but gives up (returns `None`) after `limit`
+/// characters, so highlighting stays cheap next to a bracket that encloses a
+/// multi-megabyte block.
+pub fn matching_brace_within(doc: &Document, pos: usize, limit: usize) -> Option<(usize, usize)> {
     let opens = ['(', '[', '{', '<'];
     let closes = [')', ']', '}', '>'];
     let check = |p: usize| -> Option<(usize, usize)> {
@@ -732,39 +740,39 @@ pub fn matching_brace(doc: &Document, pos: usize) -> Option<(usize, usize)> {
         }
         let (o, cl) = (opens[idx], closes[idx]);
         let mut depth = 0i64;
-        let len = doc.len_chars();
-        let limit = 2_000_000usize;
+        // Walk with the rope's char iterator: indexing each char separately
+        // costs a tree lookup per step, which adds up over megabytes.
         if fwd {
-            let mut q = p;
-            let mut steps = 0;
-            while q < len && steps < limit {
-                let ch = doc.rope.char(q);
+            for (i, ch) in doc.rope.chars_at(p).enumerate() {
+                if i >= limit {
+                    return None;
+                }
                 if ch == o {
                     depth += 1;
                 } else if ch == cl {
                     depth -= 1;
                     if depth == 0 {
-                        return Some((p, q));
+                        return Some((p, p + i));
                     }
                 }
-                q += 1;
-                steps += 1;
             }
         } else {
-            let mut q = p as isize;
-            let mut steps = 0;
-            while q >= 0 && steps < limit {
-                let ch = doc.rope.char(q.cast_unsigned());
+            let mut it = doc.rope.chars_at(p + 1);
+            let mut q = p + 1;
+            while q > 0 {
+                if p + 1 - q >= limit {
+                    return None;
+                }
+                let Some(ch) = it.prev() else { break };
+                q -= 1;
                 if ch == cl {
                     depth += 1;
                 } else if ch == o {
                     depth -= 1;
                     if depth == 0 {
-                        return Some((p, q.cast_unsigned()));
+                        return Some((p, q));
                     }
                 }
-                q -= 1;
-                steps += 1;
             }
         }
         Some((p, usize::MAX))
@@ -1020,6 +1028,22 @@ mod tests {
         let (d, _) = setup("f(a[1]) {}");
         assert_eq!(matching_brace(&d, 1), Some((1, 6)));
         assert_eq!(matching_brace(&d, 7), Some((6, 1)));
+        assert_eq!(matching_brace(&d, 3), Some((3, 5)));
+        assert_eq!(matching_brace(&d, 9), Some((8, 9)));
+        assert_eq!(matching_brace(&d, 10), Some((9, 8)));
+        // Unmatched brace.
+        let (d, _) = setup("((x)");
+        assert_eq!(matching_brace(&d, 1), Some((0, usize::MAX)));
+        // A match a whole (multi-chunk) document away, both directions.
+        let body = "[1, {\"k\": [2]}],\n".repeat(20_000);
+        let text = format!("[{body}]");
+        let last = text.chars().count() - 1;
+        let (d, _) = setup(&text);
+        assert_eq!(matching_brace(&d, 0), Some((0, last)));
+        assert_eq!(matching_brace(&d, last + 1), Some((last, 0)));
+        // With a search limit, a far-away match is simply not found.
+        assert_eq!(matching_brace_within(&d, 0, 1000), None);
+        assert_eq!(matching_brace_within(&d, 2, 1000), Some((1, 15)));
     }
 
     #[test]

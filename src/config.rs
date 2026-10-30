@@ -19,6 +19,8 @@ pub struct Settings {
     pub use_spaces: bool,
     pub auto_indent: bool,
     pub word_wrap: bool,
+    /// Colour code by language. Off by default: plain text is the fastest view.
+    pub syntax_highlighting: bool,
     pub show_line_numbers: bool,
     pub show_bookmark_margin: bool,
     pub show_fold_margin: bool,
@@ -92,6 +94,7 @@ impl Default for Settings {
             use_spaces: false,
             auto_indent: true,
             word_wrap: false,
+            syntax_highlighting: false,
             show_line_numbers: true,
             show_bookmark_margin: true,
             show_fold_margin: true,
@@ -314,5 +317,13 @@ mod tests {
         let s: Settings = serde_json::from_str("{\"tab_size\": 2}").unwrap();
         assert_eq!(s.tab_size, 2);
         assert!(s.show_line_numbers);
+    }
+
+    #[test]
+    fn syntax_highlighting_is_off_by_default() {
+        assert!(!Settings::default().syntax_highlighting);
+        // Settings files saved before the option existed also load with it off.
+        let s: Settings = serde_json::from_str("{\"tab_size\": 4}").unwrap();
+        assert!(!s.syntax_highlighting);
     }
 }

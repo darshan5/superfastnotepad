@@ -229,6 +229,11 @@ impl Lexer {
         }
     }
 
+    /// Plain text: lexing produces no colours and no folds.
+    pub fn is_plain(&self) -> bool {
+        self.family == Family::Plain
+    }
+
     pub fn initial_state(&self) -> LexState {
         match self.family {
             Family::Markup => LexState::MkText,

@@ -12,6 +12,7 @@
 //!   Functions found inside a body get the container's name as their class.
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use fancy_regex::Regex;
 use serde::Deserialize;
@@ -261,9 +262,10 @@ impl Parser {
     }
 }
 
+/// Shared between the UI and the background parse thread.
 pub struct FunctionLists {
     sources: HashMap<String, RuleSource>,
-    compiled: HashMap<String, Parser>,
+    compiled: Mutex<HashMap<String, Arc<Parser>>>,
 }
 
 impl FunctionLists {
@@ -271,7 +273,7 @@ impl FunctionLists {
         let sources = serde_json::from_str(RULES_JSON).unwrap_or_default();
         Self {
             sources,
-            compiled: HashMap::new(),
+            compiled: Mutex::new(HashMap::new()),
         }
     }
 
@@ -280,14 +282,17 @@ impl FunctionLists {
     }
 
     /// Parses `text` with the rules for `lang` and returns the found items.
-    pub fn parse(&mut self, lang: &str, text: &str) -> Vec<FoundItem> {
+    pub fn parse(&self, lang: &str, text: &str) -> Vec<FoundItem> {
         let Some(src) = self.sources.get(lang) else {
             return Vec::new();
         };
-        let parser = self
-            .compiled
-            .entry(lang.to_string())
-            .or_insert_with(|| Parser::from_source(src));
+        let parser = Arc::clone(
+            self.compiled
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .entry(lang.to_string())
+                .or_insert_with(|| Arc::new(Parser::from_source(src))),
+        );
         let normalized = if text.contains('\r') {
             text.replace("\r\n", "\n").replace('\r', "\n")
         } else {
@@ -377,7 +382,7 @@ mod tests {
 
     #[test]
     fn rust_functions() {
-        let src = "fn main() {\n    let s = \"fn fake() {\";\n}\nimpl<T> Display for Foo<T> {\n    pub fn bar(&self) -> u8 {\n        1\n    }\n}\npub(crate) async fn later() {}\n";
+        let src = "fn main() {\n    let s = \"fn fake() {\";\n}\nimpl<T> Display for Foo<T> {\n    pub fn bar(&self) -> u8 {\n        if b == b'{' { 1 } else { 2 }\n    }\n}\npub(crate) async fn later() {}\n";
         let items = found("rust", src);
         assert_eq!(
             items,
@@ -427,7 +432,7 @@ mod bench {
         let path = std::env::var("FL_FILE").expect("FL_FILE");
         let lang = std::env::var("FL_LANG").expect("FL_LANG");
         let text = std::fs::read_to_string(path).unwrap();
-        let mut fl = super::FunctionLists::new();
+        let fl = super::FunctionLists::new();
         let t = std::time::Instant::now();
         let items = fl.parse(&lang, &text);
         println!("{} items in {:?}", items.len(), t.elapsed());

@@ -118,11 +118,30 @@ pub struct Mark {
 
 pub struct LexCache {
     lexer: Lexer,
+    /// Syntax highlighting on. When off, no line is lexed and folding
+    /// follows indentation.
+    enabled: bool,
     /// State at the start of each line; `states.len() - 1` lines are valid.
     states: Vec<LexState>,
     /// Fold level at the start of each line (parallel to `states`).
     levels: Vec<i32>,
+    /// States computed before the last edit for the lines below it. When
+    /// re-lexing reaches a line whose new state matches, the rest is reused.
+    tail: Option<LexTail>,
 }
+
+/// Lexer states of the unchanged lines after an edit, already shifted to
+/// their new line numbers: `states[i]` belongs to line `first + i - skip`.
+struct LexTail {
+    first: usize,
+    skip: usize,
+    states: Vec<LexState>,
+    levels: Vec<i32>,
+}
+
+/// Background colouring stops at this many lines; beyond it, lines are
+/// still coloured on demand when they're shown.
+const BACKGROUND_LEX_MAX_LINES: usize = 2_000_000;
 
 pub struct Document {
     pub id: DocId,
@@ -209,8 +228,10 @@ impl Document {
             change_log: VecDeque::new(),
             lex: LexCache {
                 lexer,
+                enabled: true,
                 states: vec![init],
                 levels: vec![0],
+                tail: None,
             },
             text_cache: RefCell::new(None),
             tab_width: 4,
@@ -312,6 +333,7 @@ impl Document {
         self.lex.lexer = Lexer::new(&langs.langs[lang], langs);
         self.lex.states = vec![self.lex.lexer.initial_state()];
         self.lex.levels = vec![0];
+        self.lex.tail = None;
         for m in &mut self.meta {
             m.folded = false;
         }
@@ -485,6 +507,7 @@ impl Document {
     fn raw_replace(&mut self, pos: usize, del: usize, new: &str) {
         let lines_before = self.rope.len_lines();
         let start_line = self.rope.char_to_line(pos);
+        let end_line_old = self.rope.char_to_line(pos + del);
         // A deletion that starts right after "\r" and inserts "\n" can merge lines;
         // the line-count delta below handles that uniformly.
         if del > 0 {
@@ -526,8 +549,17 @@ impl Document {
                 m.end <= pos
             }
         });
-        // Invalidate the lexer cache from the edited line on.
+        // Re-lex from the edited line on, but keep the old states of the
+        // untouched lines below so re-lexing can stop once it catches up.
         let keep = (start_line + 1).min(self.lex.states.len());
+        let old_first = end_line_old + 1;
+        self.lex.tail =
+            (old_first < self.lex.states.len() && self.lex.tail.is_none()).then(|| LexTail {
+                first: (old_first.cast_signed() + delta).cast_unsigned(),
+                skip: 0,
+                states: self.lex.states.split_off(old_first),
+                levels: self.lex.levels.split_off(old_first),
+            });
         self.lex.states.truncate(keep);
         self.lex.levels.truncate(keep);
         self.version += 1;
@@ -614,18 +646,101 @@ impl Document {
         let target = upto_line.min(self.line_count());
         let mut spans: Vec<Span> = Vec::new();
         while self.lex.states.len() <= target {
-            let l = self.lex.states.len() - 1;
-            let st = self.lex.states[l];
-            let text = self.line_text(l);
-            let (next, fold) = self.lex.lexer.lex_line(&text, st, &mut spans);
-            self.lex.states.push(next);
-            let lv = self.lex.levels[l];
-            self.lex.levels.push(lv + fold);
+            self.lex_next_line(&mut spans);
         }
+    }
+
+    /// Lexes the first line without a known end state. If its end state
+    /// matches the pre-edit state of the next line, the remaining pre-edit
+    /// states are reused (shifting fold levels by the difference).
+    fn lex_next_line(&mut self, spans: &mut Vec<Span>) {
+        let l = self.lex.states.len() - 1;
+        let st = self.lex.states[l];
+        let text = self.line_text(l);
+        let (next, fold) = self.lex.lexer.lex_line(&text, st, spans);
+        self.lex.states.push(next);
+        let level = self.lex.levels[l] + fold;
+        self.lex.levels.push(level);
+        let line = l + 1;
+        let Some(t) = &mut self.lex.tail else {
+            return;
+        };
+        if line < t.first {
+            return;
+        }
+        let i = t.skip + (line - t.first);
+        if i >= t.states.len() {
+            self.lex.tail = None;
+            return;
+        }
+        if t.states[i] == next {
+            let offset = level - t.levels[i];
+            let t = self.lex.tail.take().expect("tail");
+            let n = self.line_count() + 1;
+            let room = n.saturating_sub(self.lex.states.len());
+            self.lex
+                .states
+                .extend(t.states[i + 1..].iter().copied().take(room));
+            self.lex
+                .levels
+                .extend(t.levels[i + 1..].iter().map(|v| v + offset).take(room));
+        }
+    }
+
+    /// Colours more of the document in the background, for up to `budget`.
+    /// Returns true while there is more to do.
+    pub fn lex_ahead(&mut self, budget: std::time::Duration) -> bool {
+        if !self.is_lexing_pending() {
+            return false;
+        }
+        let target = self.line_count().min(BACKGROUND_LEX_MAX_LINES);
+        let start = std::time::Instant::now();
+        let mut spans: Vec<Span> = Vec::new();
+        while self.lex.states.len() <= target {
+            for _ in 0..256 {
+                if self.lex.states.len() > target {
+                    return false;
+                }
+                self.lex_next_line(&mut spans);
+            }
+            if start.elapsed() >= budget {
+                break;
+            }
+        }
+        self.lex.states.len() <= target
+    }
+
+    /// True while background colouring still has lines to do.
+    pub fn is_lexing_pending(&self) -> bool {
+        self.lex.enabled
+            && !self.is_plain_lexer()
+            && self.lex.states.len() <= self.line_count().min(BACKGROUND_LEX_MAX_LINES)
+    }
+
+    fn is_plain_lexer(&self) -> bool {
+        self.lex.lexer.is_plain()
+    }
+
+    /// Turns syntax highlighting on or off. Collapsed folds are opened,
+    /// because the fold structure changes with it.
+    pub fn set_highlighting(&mut self, on: bool) {
+        if self.lex.enabled == on {
+            return;
+        }
+        self.lex.enabled = on;
+        for m in &mut self.meta {
+            m.folded = false;
+        }
+        self.version += 1;
+        self.fold_gen += 1;
     }
 
     /// Syntax spans for one line (byte offsets into `line_text`).
     pub fn line_spans(&mut self, line: usize, text: &str) -> Vec<Span> {
+        // Plain text has no colours, so there is nothing to lex up to `line`.
+        if !self.lex.enabled || self.is_plain_lexer() {
+            return Vec::new();
+        }
         self.ensure_lexed(line);
         let mut spans = Vec::new();
         if let Some(&st) = self.lex.states.get(line) {
@@ -635,7 +750,11 @@ impl Document {
     }
 
     pub fn fold_mode(&self) -> FoldMode {
-        self.lex.lexer.fold_mode()
+        match self.lex.lexer.fold_mode() {
+            FoldMode::None => FoldMode::None,
+            _ if !self.lex.enabled => FoldMode::Indent,
+            m => m,
+        }
     }
 
     fn indent_of(&self, line: usize) -> Option<usize> {
@@ -860,6 +979,83 @@ mod tests {
         Document::from_text(1, "t".into(), text, &langs, cpp)
     }
 
+    /// Lexes everything from scratch and returns (states, levels).
+    fn fresh_lex(d: &Document) -> (Vec<LexState>, Vec<i32>) {
+        let langs = LangRegistry::load();
+        let mut f = Document::from_text(2, "f".into(), &d.rope.to_string(), &langs, d.lang);
+        f.ensure_lexed(f.line_count());
+        (f.lex.states, f.lex.levels)
+    }
+
+    #[test]
+    fn incremental_lexing_matches_a_fresh_lex() {
+        let base = "int a = 1; // c\n/* block\n comment */\nvoid f() {\n  if (x) {\n    s = \"str\";\n  }\n}\n";
+        let mut d = doc(&base.repeat(40));
+        let pieces = ["/*", "*/", "\"", "{", "}", "\n", "x", "// ", "\n\n", "'"];
+        let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut next = |m: usize| {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            usize::try_from(seed >> 33).unwrap() % m
+        };
+        for step in 0..400 {
+            // Lex part of the document, like a frame showing some lines.
+            let upto = next(d.line_count() + 1);
+            d.ensure_lexed(upto);
+            let len = d.len_chars();
+            let pos = next(len + 1);
+            let del = if next(3) == 0 {
+                next(12).min(len - pos)
+            } else {
+                0
+            };
+            let ins = pieces[next(pieces.len())];
+            let sels = vec![Selection::caret(pos)];
+            d.edit(
+                vec![(pos, pos + del, ins.into())],
+                &sels,
+                EditKind::Other,
+                |_| sels.clone(),
+            );
+            if step % 7 == 0 {
+                d.ensure_lexed(d.line_count());
+                let (states, levels) = fresh_lex(&d);
+                assert_eq!(d.lex.states, states, "states differ after step {step}");
+                assert_eq!(d.lex.levels, levels, "fold levels differ after step {step}");
+            }
+        }
+    }
+
+    #[test]
+    fn background_lexing_fills_the_whole_document() {
+        let mut d = doc(&"void f() { /* x */ }\n".repeat(5000));
+        let mut rounds = 0;
+        while d.lex_ahead(std::time::Duration::from_millis(1)) {
+            rounds += 1;
+            assert!(rounds < 10_000);
+        }
+        assert_eq!(d.lex.states.len(), d.line_count() + 1);
+        assert_eq!((d.lex.states.clone(), d.lex.levels.clone()), fresh_lex(&d));
+        // Turned off, it does nothing.
+        let mut d = doc("int x;\n");
+        d.set_highlighting(false);
+        assert!(!d.lex_ahead(std::time::Duration::from_millis(1)));
+        assert_eq!(d.lex.states.len(), 1);
+    }
+
+    #[test]
+    fn highlighting_off_skips_lexing_and_folds_by_indent() {
+        let mut d = doc("int f() {\n    return 1;\n}\n");
+        assert!(!d.line_spans(0, "int f() {").is_empty());
+        assert_eq!(d.fold_mode(), FoldMode::Braces);
+        d.set_highlighting(false);
+        assert!(d.line_spans(1, "    return 1;").is_empty());
+        assert_eq!(d.fold_mode(), FoldMode::Indent);
+        assert!(d.is_fold_header(0));
+        assert_eq!(d.fold_range(0), Some(1));
+        // Nothing was lexed after highlighting was turned off.
+        assert_eq!(d.lex.states.len(), 1);
+    }
+
     #[test]
     fn edit_undo_redo_and_dirty() {
         let mut d = doc("hello\nworld");
@@ -1018,7 +1214,7 @@ mod startup_bench {
         let a = t.elapsed();
         let _t = crate::theme::ThemeRegistry::load();
         let b = t.elapsed();
-        let mut fl = crate::function_list::FunctionLists::new();
+        let fl = crate::function_list::FunctionLists::new();
         let _ = fl.parse("cpp", "int main() {}");
         let c = t.elapsed();
         let f1 = std::fs::read("/System/Library/Fonts/Menlo.ttc")

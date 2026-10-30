@@ -85,6 +85,23 @@ impl App {
     #[allow(clippy::too_many_lines)]
     pub fn frame(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
+        let highlight = self.settings.syntax_highlighting;
+        for d in self.docs.values_mut() {
+            d.set_highlighting(highlight);
+        }
+        if highlight {
+            // Colour the rest of the shown documents a little each frame, so
+            // jumping anywhere later doesn't have to colour everything above.
+            let mut more = false;
+            for pane in &self.panes {
+                if let Some(d) = pane.active_doc().and_then(|id| self.docs.get_mut(&id)) {
+                    more |= d.lex_ahead(std::time::Duration::from_millis(2));
+                }
+            }
+            if more {
+                ctx.request_repaint();
+            }
+        }
         if self.egui_ctx.is_none() {
             self.egui_ctx = Some(ctx.clone());
             ctx.options_mut(|o| o.zoom_with_keyboard = false);
@@ -889,6 +906,13 @@ impl App {
                 Command::WordWrap,
                 out,
             );
+            self.check(
+                ui,
+                "Syntax Highlighting",
+                self.settings.syntax_highlighting,
+                Command::SyntaxHighlighting,
+                out,
+            );
             self.item(ui, "Focus on Another View", Command::FocusOtherView, out);
             ui.separator();
             self.item(ui, "Fold All", Command::FoldAll, out);
@@ -1384,6 +1408,13 @@ impl App {
                 "Word wrap",
                 Command::WordWrap,
                 self.settings.word_wrap,
+            );
+            b(
+                ui,
+                Icon::Highlight,
+                "Syntax Highlighting",
+                Command::SyntaxHighlighting,
+                self.settings.syntax_highlighting,
             );
             b(
                 ui,
@@ -1960,5 +1991,119 @@ impl App {
             if d.is_dirty() { "*" } else { "" },
             d.display_name()
         )
+    }
+}
+
+#[cfg(test)]
+mod bench {
+    use std::time::{Duration, Instant};
+
+    use egui::{Event, RawInput, Rect, pos2};
+
+    use crate::app::{App, StartupArgs};
+
+    fn stats(name: &str, t: &mut [Duration]) {
+        t.sort_unstable();
+        let n = t.len();
+        let avg = t.iter().sum::<Duration>() / u32::try_from(n).unwrap();
+        println!(
+            "{name:<28} avg {avg:>9.2?}  p95 {:>9.2?}  max {:>9.2?}",
+            t[n * 95 / 100],
+            t[n - 1]
+        );
+    }
+
+    /// Runs the whole UI off-screen (no window, no GPU) and times building
+    /// and tessellating frames while idle, scrolling and typing.
+    #[test]
+    #[ignore = "benchmark: BENCH_FILE=path cargo test --release ui_bench -- --ignored --nocapture"]
+    fn ui_bench() {
+        let path = std::env::var("BENCH_FILE").expect("BENCH_FILE");
+        let cfg = std::env::temp_dir().join("superfastnotepad-bench");
+        let _ = std::fs::remove_dir_all(&cfg);
+        // SAFETY: set before any other thread reads the environment.
+        unsafe { std::env::set_var("SUPERFASTNOTEPAD_CONFIG_DIR", &cfg) };
+        for highlight in [false, true] {
+            let ctx = egui::Context::default();
+            crate::setup_fonts(&ctx).unwrap();
+            let mut app = App::new(StartupArgs {
+                files: vec![path.clone()],
+                line: None,
+                column: None,
+                lang: None,
+                no_session: true,
+                read_only: false,
+                always_on_top: false,
+            });
+            app.settings.syntax_highlighting = highlight;
+            app.settings.show_function_list = std::env::var_os("BENCH_FUNCLIST").is_some();
+            let mut time = 0.0;
+            let mut frame = |app: &mut App, events: Vec<Event>| {
+                time += 1.0 / 120.0;
+                let input = RawInput {
+                    screen_rect: Some(Rect::from_min_size(
+                        pos2(0.0, 0.0),
+                        egui::vec2(1600.0, 1000.0),
+                    )),
+                    time: Some(time),
+                    events,
+                    ..Default::default()
+                };
+                let t = Instant::now();
+                let out = ctx.run_ui(input, |ui| app.frame(ui));
+                let _ = ctx.tessellate(out.shapes, out.pixels_per_point);
+                t.elapsed()
+            };
+            for _ in 0..5 {
+                frame(&mut app, Vec::new());
+            }
+            let key = |app: &App| (app.focused, app.panes[app.focused].active_doc().unwrap());
+            let mut idle: Vec<_> = (0..60).map(|_| frame(&mut app, Vec::new())).collect();
+            // Idle frames keep colouring in the background; count how long
+            // until the whole file is done, then time a jump to the end.
+            let k = key(&app);
+            let t = Instant::now();
+            let mut fill_frames = 0;
+            while app.docs[&k.1].is_lexing_pending() && fill_frames < 10_000 {
+                frame(&mut app, Vec::new());
+                fill_frames += 1;
+            }
+            let fill = t.elapsed();
+            app.views.get_mut(&k).unwrap().top_row = 1e9;
+            let mut jump = vec![frame(&mut app, Vec::new())];
+            app.views.get_mut(&k).unwrap().top_row = 0.0;
+            frame(&mut app, Vec::new());
+            let mut scroll = Vec::new();
+            for i in 0..300 {
+                let k = key(&app);
+                app.views.get_mut(&k).unwrap().top_row = f64::from(i) * 40.0;
+                scroll.push(frame(&mut app, Vec::new()));
+            }
+            // Jump to the middle, then type there.
+            let k = key(&app);
+            app.views.get_mut(&k).unwrap().top_row = 60_000.0;
+            app.request_focus_editor = true;
+            frame(&mut app, Vec::new());
+            frame(&mut app, Vec::new());
+            let mut typing: Vec<_> = "notify_all_listeners(x); "
+                .chars()
+                .cycle()
+                .take(100)
+                .map(|c| frame(&mut app, vec![Event::Text(c.to_string())]))
+                .collect();
+            let mut after: Vec<_> = (0..60).map(|_| frame(&mut app, Vec::new())).collect();
+            let doc = &app.docs[&k.1];
+            assert!(doc.is_dirty(), "typing didn't reach the editor");
+            println!(
+                "--- syntax highlighting {}",
+                if highlight { "ON" } else { "OFF" }
+            );
+            stats("idle frame", &mut idle);
+            println!("background colouring done after {fill_frames} frames ({fill:.0?})");
+            stats("jump to end frame", &mut jump);
+            stats("scroll frame (new rows)", &mut scroll);
+            stats("typing frame", &mut typing);
+            stats("idle frame after typing", &mut after);
+        }
     }
 }
