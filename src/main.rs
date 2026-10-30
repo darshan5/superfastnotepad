@@ -131,30 +131,8 @@ impl eframe::App for App {
 }
 
 fn app_icon() -> egui::IconData {
-    // A simple generated icon: green notepad with lines.
-    let (w, h) = (64u32, 64u32);
-    let mut rgba = vec![0u8; (w * h * 4) as usize];
-    for y in 0..h {
-        for x in 0..w {
-            let i = ((y * w + x) * 4) as usize;
-            let inside = (6..58).contains(&x) && (4..60).contains(&y);
-            let (r, g, b, a) = if !inside {
-                (0, 0, 0, 0)
-            } else if y < 14 {
-                (0x3c, 0x9a, 0x3c, 255)
-            } else if (y - 14) % 8 == 6 && (12..52).contains(&x) {
-                (0x70, 0x90, 0xb0, 255)
-            } else {
-                (0xf4, 0xf8, 0xf0, 255)
-            };
-            rgba[i..i + 4].copy_from_slice(&[r, g, b, a]);
-        }
-    }
-    egui::IconData {
-        rgba,
-        width: w,
-        height: h,
-    }
+    // Same artwork as the macOS bundle icon (scripts/make-icon.py).
+    eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon-256.png")).unwrap_or_default()
 }
 
 fn main() -> eframe::Result<()> {
