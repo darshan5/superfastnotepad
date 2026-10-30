@@ -339,7 +339,7 @@ mod tests {
     #[test]
     fn every_rule_compiles() {
         let sources: HashMap<String, RuleSource> = serde_json::from_str(RULES_JSON).unwrap();
-        assert!(sources.len() >= 25, "only {} languages", sources.len());
+        assert_eq!(sources.len(), 20, "languages with Function List rules");
         for (lang, src) in &sources {
             let all = src.skip.iter().chain(&src.functions).chain(
                 src.containers

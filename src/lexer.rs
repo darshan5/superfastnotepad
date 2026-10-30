@@ -183,20 +183,7 @@ fn code_rules(lang: &Language) -> CodeRules {
         comment_end: lang.comment_end.clone(),
         multiline_strings: matches!(
             lang.name.as_str(),
-            "rust"
-                | "bash"
-                | "perl"
-                | "ruby"
-                | "sql"
-                | "php"
-                | "powershell"
-                | "r"
-                | "toml"
-                | "nim"
-                | "swift"
-                | "lua"
-                | "julia"
-                | "elixir"
+            "rust" | "bash" | "perl" | "sql" | "php" | "powershell" | "swift"
         ),
         rust_like: lang.name == "rust",
         profile: lang.profile.clone(),
@@ -267,6 +254,10 @@ impl Lexer {
                 (state, 0)
             }
             Family::Markdown => (lex_markdown(line, state, spans), 0),
+            Family::Log => {
+                lex_log(line, spans);
+                (state, 0)
+            }
         }
     }
 
@@ -845,6 +836,53 @@ fn lex_diff(line: &str, spans: &mut Vec<Span>) {
     spans.push((0, line.len(), kind));
 }
 
+/// Log lines: severity words (errors like deleted diff lines, warnings like
+/// preprocessor lines, info like added lines, debug like comments), numbers
+/// and timestamps, and quoted strings.
+fn lex_log(line: &str, spans: &mut Vec<Span>) {
+    let b = line.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        let c = b[i];
+        if c == b'"' {
+            let end = line[i + 1..].find('"').map_or(b.len(), |e| i + e + 2);
+            spans.push((i, end, TokenKind::String));
+            i = end;
+        } else if c.is_ascii_digit() {
+            let start = i;
+            while i < b.len()
+                && (b[i].is_ascii_digit()
+                    || matches!(b[i], b':' | b'.' | b'-' | b'T' | b'Z' | b','))
+            {
+                i += 1;
+            }
+            spans.push((start, i, TokenKind::Number));
+        } else if c.is_ascii_alphabetic() {
+            let start = i;
+            while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
+                i += 1;
+            }
+            let kind = match line[start..i].to_ascii_uppercase().as_str() {
+                "ERROR" | "ERR" | "FATAL" | "CRITICAL" | "CRIT" | "SEVERE" | "PANIC"
+                | "EXCEPTION" | "FAILED" | "FAILURE" | "EMERG" | "ALERT" => {
+                    Some(TokenKind::DiffDel)
+                }
+                "WARN" | "WARNING" => Some(TokenKind::Preprocessor),
+                "INFO" | "NOTICE" | "OK" | "SUCCESS" => Some(TokenKind::DiffAdd),
+                "DEBUG" | "TRACE" | "VERBOSE" | "FINE" | "FINER" | "FINEST" => {
+                    Some(TokenKind::Comment)
+                }
+                _ => None,
+            };
+            if let Some(k) = kind {
+                spans.push((start, i, k));
+            }
+        } else {
+            i += line[i..].chars().next().map_or(1, char::len_utf8);
+        }
+    }
+}
+
 fn lex_markdown(line: &str, state: LexState, spans: &mut Vec<Span>) -> LexState {
     let t = line.trim_start();
     if t.starts_with("```") || t.starts_with("~~~") {
@@ -1021,5 +1059,25 @@ mod tests {
         let r = lex("batch", &["rem hello", "echo remove"]);
         assert_eq!(kind_at(&r[0], 5), TokenKind::CommentLine);
         assert_ne!(kind_at(&r[1], 6), TokenKind::CommentLine);
+    }
+
+    #[test]
+    fn log_levels_numbers_and_strings() {
+        let mut spans = Vec::new();
+        let line = r#"2026-10-30 14:05:07,123 ERROR [db] "disk full" warn Info debug errors"#;
+        lex_log(line, &mut spans);
+        let got: Vec<(&str, TokenKind)> = spans.iter().map(|&(a, b, k)| (&line[a..b], k)).collect();
+        assert_eq!(
+            got,
+            vec![
+                ("2026-10-30", TokenKind::Number),
+                ("14:05:07,123", TokenKind::Number),
+                ("ERROR", TokenKind::DiffDel),
+                ("\"disk full\"", TokenKind::String),
+                ("warn", TokenKind::Preprocessor),
+                ("Info", TokenKind::DiffAdd),
+                ("debug", TokenKind::Comment),
+            ]
+        );
     }
 }

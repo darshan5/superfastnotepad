@@ -111,10 +111,11 @@ pub struct ViewState {
     pub rect: Option<((usize, usize), (usize, usize))>,
     pub scroll_to_caret: bool,
     pub center_caret: bool,
-    pub zoom: i32,
     pub visible_rows: usize,
     pub tab_width: usize,
     pub autocomplete: Option<AutoComplete>,
+    /// Parameter hint shown while typing a call: (position of its `(`, text).
+    pub call_tip: Option<(usize, String)>,
     pub begin_select: Option<usize>,
     pub max_cols: usize,
     drag: Option<Drag>,
@@ -141,10 +142,10 @@ impl Default for ViewState {
             rect: None,
             scroll_to_caret: false,
             center_caret: false,
-            zoom: 0,
             visible_rows: 30,
             tab_width: 4,
             autocomplete: None,
+            call_tip: None,
             begin_select: None,
             max_cols: 0,
             drag: None,
@@ -334,13 +335,22 @@ impl ViewState {
         if self.layout.key == key
             && (self.layout.lines.is_some()
                 || self.layout.prefix.is_some()
-                || (!doc.has_folds() && !wrap && decor.is_none()))
+                || (!doc.has_folds() && !wrap && decor.is_none() && doc.line_filter.is_none()))
         {
             return;
         }
         self.layout.key = key;
         let n = doc.line_count();
-        self.layout.lines = if doc.has_folds() {
+        self.layout.lines = if let Some(f) = &doc.line_filter
+            && decor.is_none()
+        {
+            // An edit may have removed lines since the filter was computed.
+            let mut v: Vec<usize> = f.iter().copied().take_while(|&l| l < n).collect();
+            if v.is_empty() {
+                v.push(0);
+            }
+            Some(v)
+        } else if doc.has_folds() {
             let hidden = doc.hidden_ranges();
             let mut v = Vec::with_capacity(n);
             let mut hi = hidden.iter().peekable();
@@ -660,7 +670,7 @@ impl ViewState {
             }
             KeyAction::ToggleOvertype => *overtype = !*overtype,
             KeyAction::Escape => {
-                if self.autocomplete.take().is_none() {
+                if self.autocomplete.take().is_none() && self.call_tip.take().is_none() {
                     let p = self.primary();
                     self.sels = vec![Selection::caret(p.head)];
                     self.primary_idx = 0;
@@ -764,7 +774,7 @@ pub fn show(
     doc.tab_width = vs.tab_width;
     vs.sync(doc);
 
-    let size = (env.font_size + vs.zoom as f32).clamp(5.0, 72.0);
+    let size = env.font_size.clamp(5.0, 72.0);
     let font = FontId::monospace(size);
     let (cw, lh) = ui.fonts_mut(|f| (f.glyph_width(&font, 'M'), f.row_height(&font)));
     let lh = lh.ceil();
@@ -985,6 +995,7 @@ pub fn show(
                 Some(LineKind::Removed) => (Some(cc.removed), cc.removed_strong),
                 Some(LineKind::Added) => (Some(cc.added), cc.added_strong),
                 Some(LineKind::Changed) => (Some(cc.changed), cc.changed_strong),
+                Some(LineKind::Moved) => (Some(cc.moved), cc.moved_strong),
                 _ => (None, cc.changed_strong),
             };
             if let Some(bg) = bg {
@@ -1488,6 +1499,7 @@ pub fn show(
             let color = match k {
                 LineKind::Removed => cc.removed_strong,
                 LineKind::Added => cc.added_strong,
+                LineKind::Moved => cc.moved_strong,
                 _ => cc.changed_strong,
             };
             let y0 = vtrack.min.y + vtrack.height() * (vs.line_first_row(a) as f32 / total);
@@ -1612,6 +1624,64 @@ pub fn show(
         }
     }
 
+    // Call tip: shown above the line while the caret is inside the call.
+    if let Some((open, tip)) = &vs.call_tip {
+        let head = vs.primary().head;
+        let inside = head > *open
+            && head <= doc.len_chars()
+            && crate::calltip::active_param(&doc.slice(open + 1, head)).is_some();
+        if !inside || !has_focus {
+            vs.call_tip = None;
+        } else {
+            let param = crate::calltip::active_param(&doc.slice(open + 1, head)).unwrap_or(0);
+            let (row, col) = vs.pos_to_row_col(doc, *open, wrap);
+            let y = text_rect.min.y + (row as f32 - vs.top_row as f32) * lh;
+            let x = text_left - vs.scroll_x + col as f32 * cw;
+            let mut job = egui::text::LayoutJob::default();
+            let normal = egui::TextFormat::simple(font.clone(), ui.visuals().text_color());
+            let strong = egui::TextFormat {
+                color: ui.visuals().strong_text_color(),
+                underline: Stroke::new(1.0, ui.visuals().strong_text_color()),
+                ..normal.clone()
+            };
+            // Underline the parameter the caret is in.
+            let (pre, params) = tip.split_at(tip.find('(').unwrap_or(tip.len()));
+            job.append(pre, 0.0, normal.clone());
+            let mut depth = 0;
+            let mut index = 0;
+            let mut seg = String::new();
+            for c in params.chars() {
+                let at_top = depth == 1;
+                match c {
+                    '(' | '[' | '{' | '<' => depth += 1,
+                    ')' | ']' | '}' | '>' => depth -= 1,
+                    _ => {}
+                }
+                seg.push(c);
+                if (c == ',' && at_top) || (c == ')' && depth == 0) {
+                    let fmt = if index == param {
+                        strong.clone()
+                    } else {
+                        normal.clone()
+                    };
+                    job.append(&seg, 0.0, fmt);
+                    seg.clear();
+                    index += 1;
+                }
+            }
+            job.append(&seg, 0.0, normal);
+            egui::Area::new(id.with("calltip"))
+                .order(egui::Order::Foreground)
+                .pivot(egui::Align2::LEFT_BOTTOM)
+                .fixed_pos(pos2(x, y - 2.0))
+                .show(ui.ctx(), |ui| {
+                    egui::Frame::popup(ui.style()).show(ui, |ui| {
+                        ui.label(job);
+                    });
+                });
+        }
+    }
+
     // IME position.
     if has_focus {
         let (row, col) = vs.pos_to_row_col(doc, vs.primary().head, wrap);
@@ -1721,8 +1791,22 @@ struct CompareColors {
     removed_strong: Color32,
     added_strong: Color32,
     changed_strong: Color32,
+    moved: Color32,
+    moved_strong: Color32,
     spacer: Color32,
     spacer_line: Color32,
+}
+
+/// Marker colour for a compared line, as on the scrollbar (None if unchanged).
+pub fn compare_marker_color(kind: LineKind, dark: bool) -> Option<Color32> {
+    let cc = compare_colors(dark);
+    match kind {
+        LineKind::Same => None,
+        LineKind::Removed => Some(cc.removed_strong),
+        LineKind::Added => Some(cc.added_strong),
+        LineKind::Changed => Some(cc.changed_strong),
+        LineKind::Moved => Some(cc.moved_strong),
+    }
 }
 
 fn compare_colors(dark: bool) -> CompareColors {
@@ -1735,6 +1819,8 @@ fn compare_colors(dark: bool) -> CompareColors {
             removed_strong: c(0x8c, 0x33, 0x3a),
             added_strong: c(0x2f, 0x7a, 0x3d),
             changed_strong: c(0x86, 0x6f, 0x22),
+            moved: c(0x1e, 0x33, 0x52),
+            moved_strong: c(0x35, 0x5c, 0x9a),
             spacer: c(0x26, 0x26, 0x28),
             spacer_line: c(0x34, 0x34, 0x38),
         }
@@ -1746,6 +1832,8 @@ fn compare_colors(dark: bool) -> CompareColors {
             removed_strong: c(0xff, 0x9c, 0x9c),
             added_strong: c(0x8f, 0xdc, 0x8f),
             changed_strong: c(0xff, 0xcc, 0x55),
+            moved: c(0xdc, 0xe8, 0xff),
+            moved_strong: c(0x8f, 0xb4, 0xf0),
             spacer: c(0xf2, 0xf2, 0xf2),
             spacer_line: c(0xdd, 0xdd, 0xdd),
         }
@@ -1781,6 +1869,32 @@ fn accept_autocomplete(vs: &mut ViewState, doc: &mut Document, idx: usize) {
     vs.after_edit(doc);
 }
 
+/// Shows the parameters of the function whose call was just opened with `(`,
+/// if it's defined in this document.
+fn open_call_tip(vs: &mut ViewState, doc: &Document) {
+    let head = vs.primary().head;
+    // With auto-close the caret sits between `(` and `)`.
+    let Some(open) = (0..head)
+        .rev()
+        .take(2)
+        .find(|&p| doc.char_at(p) == Some('('))
+    else {
+        return;
+    };
+    let mut start = open;
+    while start > 0 && doc.char_at(start - 1).is_some_and(ops::is_word_char) {
+        start -= 1;
+    }
+    let name = doc.slice(start, open);
+    if name.is_empty() {
+        return;
+    }
+    let text = doc.text();
+    if let Some(tip) = crate::calltip::find_signature(&text, &name) {
+        vs.call_tip = Some((open, tip));
+    }
+}
+
 /// Builds the auto-completion list for the word before the caret.
 pub fn open_autocomplete(
     vs: &mut ViewState,
@@ -1802,8 +1916,12 @@ pub fn open_autocomplete(
         return;
     }
     let lower = prefix.to_lowercase();
+    // After `.`, `->` or `::` only members make sense: names that appear
+    // after one of those elsewhere in the file. Keywords don't.
+    let before = doc.slice(start.saturating_sub(2), start);
+    let member = before.ends_with('.') || before.ends_with("->") || before.ends_with("::");
     let mut items: Vec<String> = Vec::new();
-    if use_keywords {
+    if use_keywords && !member {
         items.extend(
             keywords
                 .iter()
@@ -1811,10 +1929,44 @@ pub fn open_autocomplete(
                 .cloned(),
         );
     }
+    // Names the file declares (`let x`, `fn x`, `class X`, ...) are listed
+    // first, then the other words.
+    let mut declared: Vec<String> = Vec::new();
     if use_doc_words {
         // Only the text around the caret: scanning a whole multi-megabyte
         // file on every keystroke would cost more than a frame.
         const WINDOW: usize = 256 * 1024;
+        const DECL: &[&str] = &[
+            "let",
+            "var",
+            "const",
+            "fn",
+            "def",
+            "function",
+            "func",
+            "fun",
+            "class",
+            "struct",
+            "enum",
+            "interface",
+            "type",
+            "trait",
+            "impl",
+            "sub",
+            "val",
+            "mut",
+            "static",
+            "int",
+            "long",
+            "float",
+            "double",
+            "bool",
+            "char",
+            "string",
+            "String",
+            "auto",
+            "void",
+        ];
         let hay = doc.slice(
             head.saturating_sub(WINDOW),
             (head + WINDOW).min(doc.len_chars()),
@@ -1829,17 +1981,46 @@ pub fn open_autocomplete(
             }
         };
         let mut seen = std::collections::HashSet::new();
-        for w in hay.split(|c: char| !ops::is_word_char(c)) {
-            if w.len() > prefix.len() && has_prefix(w) && w != prefix && seen.insert(w) {
-                items.push(w.to_string());
+        let mut prev_word = "";
+        let mut word_start = None;
+        let bytes = hay.as_bytes();
+        for (i, c) in hay.char_indices().chain(std::iter::once((hay.len(), ' '))) {
+            if ops::is_word_char(c) {
+                word_start.get_or_insert(i);
+                continue;
             }
+            let Some(ws) = word_start.take() else {
+                continue;
+            };
+            let w = &hay[ws..i];
+            let after_member = (ws >= 1 && bytes[ws - 1] == b'.')
+                || (ws >= 2 && (&bytes[ws - 2..ws] == b"->" || &bytes[ws - 2..ws] == b"::"));
+            let fits = w.len() > prefix.len() && has_prefix(w) && w != prefix;
+            if fits && (!member || after_member) && seen.insert(w) {
+                if DECL.contains(&prev_word) {
+                    declared.push(w.to_string());
+                } else {
+                    items.push(w.to_string());
+                }
+            } else if fits && DECL.contains(&prev_word) && !declared.iter().any(|d| d == w) {
+                // Seen before as a plain word; it's a declaration after all.
+                if let Some(p) = items.iter().position(|x| x == w) {
+                    items.remove(p);
+                    declared.push(w.to_string());
+                }
+            }
+            prev_word = w;
             if seen.len() > 2000 {
                 break;
             }
         }
     }
+    declared.sort_by_key(|s| s.to_lowercase());
     items.sort_by_key(|s| s.to_lowercase());
     items.dedup();
+    items.retain(|w| !declared.contains(w));
+    declared.extend(items);
+    let items = declared;
     if items.is_empty() {
         vs.autocomplete = None;
     } else {
@@ -1893,9 +2074,8 @@ fn handle_keys(
                     let _ = ac;
                     vs.autocomplete = None;
                 }
-                if vs.autocomplete.is_some() {
-                    // Refresh the filter.
-                    open_autocomplete(vs, doc, env.keywords, true, true, 1, true);
+                if settings.auto_complete && t.contains('(') {
+                    open_call_tip(vs, doc);
                 }
             }
             Event::Copy => {
@@ -2181,20 +2361,17 @@ fn handle_mouse(
     text_left: f32,
 ) {
     let wrap = vs.effective_wrap(doc, env.settings.word_wrap);
-    let (pointer, mods, time, scroll, zoom) = ui.input(|i| {
+    let (pointer, mods, time, scroll) = ui.input(|i| {
         (
             i.pointer.clone(),
             i.modifiers,
             i.time,
             i.smooth_scroll_delta,
-            i.zoom_delta(),
         )
     });
     let hovered = response.hovered() || response.contains_pointer();
     if hovered {
-        if (zoom - 1.0).abs() > 0.001 {
-            vs.zoom = (vs.zoom + if zoom > 1.0 { 1 } else { -1 }).clamp(-10, 30);
-        } else if scroll != Vec2::ZERO {
+        if scroll != Vec2::ZERO {
             vs.top_row -= f64::from(scroll.y / m.lh);
             vs.top_row = vs.top_row.max(0.0);
             if !wrap {
@@ -2394,6 +2571,35 @@ fn handle_mouse(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn completions(text: &str) -> Vec<String> {
+        let langs = crate::langs::LangRegistry::load();
+        let doc = Document::from_text(1, "t".into(), text, &langs, langs.normal());
+        let mut vs = ViewState::default();
+        vs.set_single(doc.len_chars());
+        open_autocomplete(
+            &mut vs,
+            &doc,
+            &["continue".to_string()],
+            true,
+            true,
+            1,
+            true,
+        );
+        vs.autocomplete.map(|a| a.items).unwrap_or_default()
+    }
+
+    #[test]
+    fn completion_lists_declarations_first_and_members_after_dots() {
+        let src = "obj.count_items();\ncountdown();\nlet counter = 1;\nco";
+        assert_eq!(
+            completions(src),
+            ["counter", "continue", "count_items", "countdown"]
+        );
+        // After a dot: only names used after dots, no keywords.
+        let src = "self.velocity = 1;\nlet value = 2;\nvalue_x();\nx.v";
+        assert_eq!(completions(src), ["velocity"]);
+    }
 
     #[test]
     fn column_math() {

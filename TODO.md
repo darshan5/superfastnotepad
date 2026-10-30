@@ -8,20 +8,16 @@ tab. It also covers "Compare with this" on a tab, comparing with the clipboard o
 version, ignoring whitespace, case and empty lines, automatic re-compare, next/previous
 difference, copying a difference to the left or right, and difference markers on the scrollbar.
 
+Since then (2026-10-30): inline single-pane view (Compare > Show Differences Inline), moved
+lines in blue, comparing selected lines, a blank "Original / Changed" compare, an ignore pattern
+(taken from the Find box), Swap Sides, hiding the side panels while comparing, compare options
+saved with the session (per `--session-dir`), difference markers in the Document Map, and Copy
+All to Left/Right (one undo step). Word wrap is never changed by a compare, and each window can
+hold its own compare.
+
 Still to do:
 
-- [ ] **Inline (single-pane) diff view** as an alternative to side by side
-- [ ] **Moved-line detection:** show lines that only moved in a separate colour (blue)
-- [ ] **Compare selected lines** of one view against selected lines of the other, with selections expanded to full lines
-- [ ] **Blank compare window:** paste two texts into "Original" and "Changed" panes without creating files
-- [ ] **Ignore a regex:** use the current Find expression as an ignore pattern, plus "Clear ignore regex"
-- [ ] **Remember wrap state:** turn word wrap off while comparing and restore the user's setting afterwards (today wrap is simply ignored during a compare)
-- [ ] **Colour settings:** choose which side shows additions; custom added/removed/changed colours
-- [ ] **Hide side panels while comparing** (Function List, Folder as Workspace…) and restore them afterwards
-- [ ] **Per-workspace compare options** that persist with the session (today they're global settings)
-- [ ] **Several compare pairs at once in differnt windows**
-- [ ] **Difference markers in the Document Map** panel, not only the scrollbar
-- [ ] **Merge helpers:** "copy all differences left/right" and undo of a copy as one step across both documents
+- [ ] **Custom compare colours** (today they follow the light or dark theme)
 
 ## Performance
 

@@ -9,12 +9,16 @@ use crate::document::{DocId, Document, EditKind};
 pub struct CompareSession {
     pub left: DocId,
     pub right: DocId,
-    /// Read-only snapshot document (clipboard / saved version) to close afterwards.
-    pub snapshot: Option<DocId>,
+    /// Read-only snapshot documents (clipboard, saved version, selections)
+    /// to close afterwards.
+    pub snapshots: Vec<DocId>,
     pub hunks: Vec<Hunk>,
     pub versions: (u64, u64),
     pub stale_since: Option<f64>,
-    pub stats: (usize, usize, usize),
+    /// (added, removed, changed, moved) lines.
+    pub stats: (usize, usize, usize, usize),
+    /// Side panels hidden for the compare, shown again when it ends.
+    pub hidden_panels: Option<[bool; 7]>,
 }
 
 impl App {
@@ -23,7 +27,7 @@ impl App {
         if let (Some(a), Some(b)) = (self.panes[0].active_doc(), self.panes[1].active_doc())
             && a != b
         {
-            self.start_compare(a, b, None);
+            self.start_compare(a, b, Vec::new());
             return;
         }
         let pane = self.focused;
@@ -34,7 +38,236 @@ impl App {
         }
         let a = p.tabs[p.active];
         let b = p.tabs[(p.active + 1) % p.tabs.len()];
-        self.start_compare(a, b, None);
+        self.start_compare(a, b, Vec::new());
+    }
+
+    /// Compares the selected lines of the two views (each selection is
+    /// extended to whole lines), shown as read-only copies.
+    pub fn compare_selections(&mut self) {
+        let mut parts = Vec::new();
+        for pane in 0..2 {
+            let Some(id) = self.panes[pane].active_doc() else {
+                break;
+            };
+            let (Some(d), Some(v)) = (self.docs.get(&id), self.views.get(&(pane, id))) else {
+                break;
+            };
+            let s = v.primary();
+            if s.is_empty() {
+                break;
+            }
+            let (a, b) = (
+                d.char_to_line(s.start()),
+                d.char_to_line(s.end().saturating_sub(1).max(s.start())),
+            );
+            let text: Vec<String> = (a..=b).map(|l| d.line_text(l)).collect();
+            parts.push((
+                format!("{} ({}-{})", d.display_name(), a + 1, b + 1),
+                text.join("\n"),
+                d.lang,
+            ));
+        }
+        if parts.len() < 2 {
+            self.message(
+                "Compare",
+                "Select some lines in both views first (use Move to Other View to show two documents).",
+            );
+            return;
+        }
+        let mut ids = Vec::new();
+        for (name, text, lang) in parts {
+            let id = self.alloc_id();
+            let mut d = Document::from_text(id, name, &text, &self.langs, lang);
+            d.read_only = true;
+            d.transient = true;
+            d.transient = true;
+            self.docs.insert(id, d);
+            ids.push(id);
+        }
+        self.start_compare(ids[0], ids[1], ids.clone());
+    }
+
+    /// Opens two empty documents, "Original" and "Changed", side by side to
+    /// paste texts into; they're compared as you type.
+    pub fn compare_blank(&mut self) {
+        let mut ids = Vec::new();
+        for (pane, name) in [(0, "Original"), (1, "Changed")] {
+            let id = self.new_document(pane);
+            if let Some(d) = self.docs.get_mut(&id) {
+                d.untitled_name = name.into();
+            }
+            ids.push(id);
+        }
+        self.start_compare(ids[0], ids[1], Vec::new());
+    }
+
+    /// Shows the differences in one read-only document: unchanged lines once,
+    /// removed lines (red) followed by the lines that replaced them (green).
+    pub fn compare_inline(&mut self) {
+        let pair = match &self.compare {
+            Some(s) => Some((s.left, s.right)),
+            None => match (self.panes[0].active_doc(), self.panes[1].active_doc()) {
+                (Some(a), Some(b)) if a != b => Some((a, b)),
+                _ => None,
+            },
+        };
+        let Some((l, r)) = pair else {
+            self.message(
+                "Compare",
+                "Show the two documents in the two views first, or start a compare.",
+            );
+            return;
+        };
+        let (Some(dl), Some(dr)) = (self.docs.get(&l), self.docs.get(&r)) else {
+            return;
+        };
+        let lines = |d: &Document| {
+            (0..d.line_count())
+                .map(|i| d.line_text(i))
+                .collect::<Vec<_>>()
+        };
+        let (left, right) = (lines(dl), lines(dr));
+        let title = format!("Diff: {} ↔ {}", dl.display_name(), dr.display_name());
+        let lang = dl.lang;
+        let res = match compare::compare(&left, &right, 0, 0, &self.settings.compare) {
+            Ok(r) => r,
+            Err(e) => {
+                self.message("Compare", &e);
+                return;
+            }
+        };
+        use compare::LineKind;
+        let mut text: Vec<&str> = Vec::new();
+        let mut kinds = Vec::new();
+        let mut inline = std::collections::HashMap::new();
+        let mut li = 0;
+        for h in &res.hunks {
+            for line in &left[li..h.left.start] {
+                text.push(line);
+                kinds.push(LineKind::Same);
+            }
+            for i in h.left.clone() {
+                if let Some(rg) = res.left.inline.get(&i) {
+                    inline.insert(text.len(), rg.clone());
+                }
+                text.push(&left[i]);
+                kinds.push(match res.left.kinds[i] {
+                    LineKind::Moved => LineKind::Moved,
+                    _ => LineKind::Removed,
+                });
+            }
+            for i in h.right.clone() {
+                if let Some(rg) = res.right.inline.get(&i) {
+                    inline.insert(text.len(), rg.clone());
+                }
+                text.push(&right[i]);
+                kinds.push(match res.right.kinds[i] {
+                    LineKind::Moved => LineKind::Moved,
+                    _ => LineKind::Added,
+                });
+            }
+            li = h.left.end;
+        }
+        for line in &left[li..] {
+            text.push(line);
+            kinds.push(LineKind::Same);
+        }
+        let id = self.alloc_id();
+        let mut d = Document::from_text(id, title, &text.join("\n"), &self.langs, lang);
+        d.read_only = true;
+        d.transient = true;
+        let decor = compare::SideDecor {
+            generation: compare::next_generation(),
+            version: d.version,
+            runs: compare::runs_of(&kinds),
+            spacers_before: vec![0; kinds.len() + 1],
+            kinds,
+            inline,
+        };
+        self.docs.insert(id, d);
+        self.clear_compare();
+        let pane = self.focused;
+        self.open_in_pane(pane, id);
+        self.activate(pane, id);
+        self.views.entry((pane, id)).or_default().compare = Some(Arc::new(decor));
+    }
+
+    /// Swaps which document is on the left.
+    pub fn compare_swap(&mut self) {
+        let Some(s) = self.compare.take() else {
+            self.flash("No compare is active");
+            return;
+        };
+        if let Some(h) = s.hidden_panels {
+            self.set_panels(h);
+        }
+        let (l, r, snaps) = (s.left, s.right, s.snapshots);
+        for (pane, id) in [(0, l), (1, r)] {
+            if let Some(v) = self.views.get_mut(&(pane, id)) {
+                v.compare = None;
+            }
+            self.close_in_pane(pane, id);
+        }
+        self.start_compare(r, l, snaps);
+    }
+
+    /// Makes one side identical to the other, as one undo step.
+    pub fn compare_copy_all(&mut self, to_right: bool) {
+        let Some(s) = &self.compare else {
+            self.flash("No compare is active");
+            return;
+        };
+        let (src, dst, pane) = if to_right {
+            (s.left, s.right, 1)
+        } else {
+            (s.right, s.left, 0)
+        };
+        let Some(text) = self.docs.get(&src).map(|d| d.rope.to_string()) else {
+            return;
+        };
+        let Some(d) = self.docs.get_mut(&dst) else {
+            return;
+        };
+        if d.read_only {
+            self.message("Compare", "The target document is read-only.");
+            return;
+        }
+        let vs = self.views.entry((pane, dst)).or_default();
+        vs.sync(d);
+        let keep = vs.sels.clone();
+        let len = d.len_chars();
+        d.edit(vec![(0, len, text)], &keep, EditKind::Other, |_| {
+            vec![crate::document::Selection::caret(0)]
+        });
+        vs.after_edit(d);
+        self.recompute_compare();
+    }
+
+    /// Visibility of the side panels, in a fixed order.
+    fn panels(&self) -> [bool; 7] {
+        let s = &self.settings;
+        [
+            s.show_doc_map,
+            s.show_doc_list,
+            s.show_function_list,
+            s.show_folder_tree,
+            s.show_json_tree,
+            s.show_char_panel,
+            s.show_clipboard_history,
+        ]
+    }
+
+    fn set_panels(&mut self, p: [bool; 7]) {
+        let s = &mut self.settings;
+        [
+            s.show_doc_map,
+            s.show_doc_list,
+            s.show_function_list,
+            s.show_folder_tree,
+            s.show_json_tree,
+            s.show_char_panel,
+            s.show_clipboard_history,
+        ] = p;
     }
 
     pub fn compare_with_clipboard(&mut self) {
@@ -77,11 +310,12 @@ impl App {
         let id = self.alloc_id();
         let mut d = Document::from_text(id, name, text, &self.langs, lang);
         d.read_only = true;
+        d.transient = true;
         self.docs.insert(id, d);
-        self.start_compare(left, id, Some(id));
+        self.start_compare(left, id, vec![id]);
     }
 
-    pub fn start_compare(&mut self, left: DocId, right: DocId, snapshot: Option<DocId>) {
+    pub fn start_compare(&mut self, left: DocId, right: DocId, snapshots: Vec<DocId>) {
         if left == right {
             self.message("Compare", "A document can't be compared with itself.");
             return;
@@ -107,14 +341,22 @@ impl App {
                 d.fold_all(false, None);
             }
         }
+        let hidden_panels = if self.settings.compare.hide_panels {
+            let before = self.panels();
+            self.set_panels([false; 7]);
+            Some(before)
+        } else {
+            None
+        };
         self.compare = Some(CompareSession {
             left,
             right,
-            snapshot,
+            snapshots,
             hunks: Vec::new(),
             versions: (u64::MAX, u64::MAX),
             stale_since: None,
-            stats: (0, 0, 0),
+            stats: (0, 0, 0, 0),
+            hidden_panels,
         });
         self.recompute_compare();
         if let Some(v) = self.views.get_mut(&(0, left)) {
@@ -150,7 +392,7 @@ impl App {
                     s.hunks = res.hunks;
                     s.versions = (vl, vr);
                     s.stale_since = None;
-                    s.stats = (res.added, res.removed, res.changed);
+                    s.stats = (res.added, res.removed, res.changed, res.moved);
                 }
                 if identical {
                     self.flash("Compare: the files match");
@@ -168,7 +410,10 @@ impl App {
         for v in self.views.values_mut() {
             v.compare = None;
         }
-        if let Some(snap) = s.snapshot {
+        if let Some(p) = s.hidden_panels {
+            self.set_panels(p);
+        }
+        for snap in s.snapshots {
             for pane in 0..2 {
                 if self.panes[pane].tabs.contains(&snap) {
                     self.close_in_pane(pane, snap);
@@ -360,16 +605,21 @@ impl App {
 
     pub fn compare_status(&self) -> Option<String> {
         let s = self.compare.as_ref()?;
-        let (a, r, c) = s.stats;
+        let (a, r, c, m) = s.stats;
         let stale = self.docs.get(&s.left).map(|d| d.version) != Some(s.versions.0)
             || self.docs.get(&s.right).map(|d| d.version) != Some(s.versions.1);
         Some(if s.hunks.is_empty() && !stale {
             "Compare: files match".into()
         } else {
             format!(
-                "Compare: {} difference{}  (+{a} −{r} ~{c}){}",
+                "Compare: {} difference{}  (+{a} −{r} ~{c}{}){}",
                 s.hunks.len(),
                 if s.hunks.len() == 1 { "" } else { "s" },
+                if m > 0 {
+                    format!(" ↕{m}")
+                } else {
+                    String::new()
+                },
                 if stale { "  · outdated" } else { "" }
             )
         })

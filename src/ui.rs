@@ -85,6 +85,8 @@ impl App {
     #[allow(clippy::too_many_lines)]
     pub fn frame(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
+        self.track_window_geometry(&ctx);
+        self.autosave(&ctx);
         let highlight = self.settings.syntax_highlighting;
         for d in self.docs.values_mut() {
             d.set_highlighting(highlight);
@@ -109,6 +111,7 @@ impl App {
         let now = ctx.input(|i| i.time);
         self.poll(now);
         self.apply_pending_goto();
+        self.follow_system_theme(ctx.system_theme() == Some(egui::Theme::Dark));
         ctx.set_visuals(if self.globals.is_dark {
             egui::Visuals::dark()
         } else {
@@ -200,6 +203,10 @@ impl App {
         if self.incremental.open {
             egui::Panel::bottom("incremental").show(ui, |ui| self.incremental_bar(ui));
         }
+        self.update_line_filter(now);
+        if self.filter.open {
+            egui::Panel::bottom("filter").show(ui, |ui| self.filter_bar(ui));
+        }
         if self.results_visible && self.results.is_some() {
             egui::Panel::bottom("results")
                 .resizable(true)
@@ -216,6 +223,7 @@ impl App {
                     });
             }
             let right = self.settings.show_function_list
+                || self.settings.show_json_tree
                 || self.settings.show_doc_map
                 || self.settings.show_char_panel
                 || self.settings.show_clipboard_history;
@@ -246,92 +254,179 @@ impl App {
 
     // ---------------------------------------------------------------- menus
 
+    /// Backs up the session and unsaved content every few seconds, but only
+    /// when something changed (an edit, a tab, the window geometry).
+    fn autosave(&mut self, ctx: &egui::Context) {
+        const INTERVAL: f64 = 3.0;
+        let now = ctx.input(|i| i.time);
+        if self.exit_requested || now - self.last_autosave < INTERVAL {
+            if !self.exit_requested {
+                ctx.request_repaint_after(std::time::Duration::from_secs_f64(INTERVAL));
+            }
+            return;
+        }
+        self.last_autosave = now;
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        {
+            use std::hash::Hash;
+            let mut docs: Vec<_> = self.docs.iter().map(|(id, d)| (*id, d.version)).collect();
+            docs.sort_unstable();
+            docs.hash(&mut h);
+            for p in &self.panes {
+                (&p.tabs, p.active).hash(&mut h);
+            }
+            self.focused.hash(&mut h);
+            if let Some(g) = self.window_geometry {
+                (
+                    g.x.to_bits(),
+                    g.y.to_bits(),
+                    g.width.to_bits(),
+                    g.height.to_bits(),
+                    g.maximized,
+                )
+                    .hash(&mut h);
+            }
+        }
+        let sig = std::hash::Hasher::finish(&h);
+        if sig != self.autosave_sig {
+            self.autosave_sig = sig;
+            self.save_all_state();
+        }
+    }
+
+    /// Remembers where the window is, so the session can restore it. While
+    /// maximized or full screen, the last normal size and position are kept.
+    fn track_window_geometry(&mut self, ctx: &egui::Context) {
+        let vp = ctx.input(|i| i.viewport().clone());
+        let maximized = vp.maximized.unwrap_or(false);
+        if vp.fullscreen.unwrap_or(false) || vp.minimized.unwrap_or(false) {
+            return;
+        }
+        if maximized {
+            if let Some(g) = &mut self.window_geometry {
+                g.maximized = true;
+            }
+            return;
+        }
+        if let (Some(outer), Some(inner)) = (vp.outer_rect, vp.inner_rect) {
+            self.window_geometry = Some(crate::config::WindowGeometry {
+                x: outer.min.x,
+                y: outer.min.y,
+                width: inner.width(),
+                height: inner.height(),
+                maximized: false,
+            });
+        }
+    }
+
+    /// Adds one plain menu item per (label, command).
+    fn items(&self, ui: &mut Ui, list: &[(&str, Command)], out: &mut Vec<Command>) {
+        for (label, cmd) in list {
+            self.item(ui, label, cmd.clone(), out);
+        }
+    }
+
     #[allow(clippy::too_many_lines)]
     fn menu_bar(&mut self, ui: &mut Ui, out: &mut Vec<Command>) {
+        use Command as C;
         ui.menu_button("File", |ui| {
-            self.item(ui, "New", Command::New, out);
-            self.item(ui, "Open...", Command::Open, out);
-            ui.menu_button("Open Containing Folder", |ui| {
-                self.item(
+            self.items(
+                ui,
+                &[
+                    ("New", C::New),
+                    ("New Window", C::NewWindow),
+                    ("Open...", C::Open),
+                    ("Open Folder as Workspace...", C::OpenFolderAsWorkspace),
+                ],
+                out,
+            );
+            let recent = !self.persisted.recent_files.is_empty();
+            ui.add_enabled_ui(recent, |ui| {
+                ui.menu_button("Open Recent", |ui| {
+                    for (i, f) in self
+                        .persisted
+                        .recent_files
+                        .iter()
+                        .take(self.settings.recent_max)
+                        .enumerate()
+                    {
+                        if ui.button(format!("{}: {f}", i + 1)).clicked() {
+                            out.push(C::OpenRecent(f.clone()));
+                            ui.close();
+                        }
+                    }
+                    ui.separator();
+                    self.items(
+                        ui,
+                        &[
+                            ("Reopen Last Closed File", C::RestoreLastClosed),
+                            ("Open All Recent Files", C::OpenAllRecent),
+                            ("Clear Recent Files", C::ClearRecent),
+                        ],
+                        out,
+                    );
+                });
+            });
+            ui.separator();
+            self.items(
+                ui,
+                &[
+                    ("Save", C::Save),
+                    ("Save As...", C::SaveAs),
+                    ("Save a Copy As...", C::SaveCopyAs),
+                    ("Save All", C::SaveAll),
+                ],
+                out,
+            );
+            ui.separator();
+            self.items(
+                ui,
+                &[("Reload from Disk", C::Reload), ("Rename...", C::Rename)],
+                out,
+            );
+            ui.separator();
+            self.items(ui, &[("Close", C::Close), ("Close All", C::CloseAll)], out);
+            ui.menu_button("Close Others", |ui| {
+                self.items(
                     ui,
-                    if cfg!(target_os = "macos") {
-                        "Finder"
-                    } else {
-                        "Explorer"
-                    },
-                    Command::OpenContainingFolder,
-                    out,
-                );
-                self.item(
-                    ui,
-                    if cfg!(target_os = "macos") {
-                        "Terminal"
-                    } else {
-                        "cmd"
-                    },
-                    Command::OpenTerminalHere,
+                    &[
+                        ("All but This", C::CloseAllButCurrent),
+                        ("All but Pinned", C::CloseAllButPinned),
+                        ("All to the Left", C::CloseAllToLeft),
+                        ("All to the Right", C::CloseAllToRight),
+                        ("All Unchanged", C::CloseAllUnchanged),
+                    ],
                     out,
                 );
             });
-            self.item(
-                ui,
-                "Open in Default Viewer",
-                Command::OpenInDefaultViewer,
-                out,
-            );
-            self.item(
-                ui,
-                "Open Folder as Workspace...",
-                Command::OpenFolderAsWorkspace,
-                out,
-            );
-            self.item(ui, "Reload from Disk", Command::Reload, out);
-            self.item(ui, "Save", Command::Save, out);
-            self.item(ui, "Save As...", Command::SaveAs, out);
-            self.item(ui, "Save a Copy As...", Command::SaveCopyAs, out);
-            self.item(ui, "Save All", Command::SaveAll, out);
-            self.item(ui, "Rename...", Command::Rename, out);
-            self.item(ui, "Close", Command::Close, out);
-            self.item(ui, "Close All", Command::CloseAll, out);
-            ui.menu_button("Close Multiple Documents", |ui| {
-                self.item(ui, "Close All BUT This", Command::CloseAllButCurrent, out);
-                self.item(ui, "Close All BUT Pinned", Command::CloseAllButPinned, out);
-                self.item(ui, "Close All to the Left", Command::CloseAllToLeft, out);
-                self.item(ui, "Close All to the Right", Command::CloseAllToRight, out);
-                self.item(ui, "Close All Unchanged", Command::CloseAllUnchanged, out);
-            });
             ui.separator();
-            self.item(ui, "Load Session...", Command::LoadSession, out);
-            self.item(ui, "Save Session...", Command::SaveSession, out);
-            ui.separator();
-            for (i, f) in self
-                .persisted
-                .recent_files
-                .iter()
-                .take(self.settings.recent_max)
-                .enumerate()
-            {
-                if ui.button(format!("{}: {f}", i + 1)).clicked() {
-                    out.push(Command::OpenRecent(f.clone()));
-                    ui.close();
-                }
-            }
-            if !self.persisted.recent_files.is_empty() {
-                self.item(
+            ui.menu_button("Session", |ui| {
+                self.items(
                     ui,
-                    "Restore Recent Closed File",
-                    Command::RestoreLastClosed,
+                    &[
+                        ("Load Session...", C::LoadSession),
+                        ("Save Session...", C::SaveSession),
+                    ],
                     out,
                 );
-                self.item(ui, "Open All Recent Files", Command::OpenAllRecent, out);
-                self.item(ui, "Empty Recent Files List", Command::ClearRecent, out);
-                ui.separator();
-            }
-            self.item(ui, "Exit", Command::Exit, out);
+            });
+            ui.menu_button("Settings", |ui| {
+                self.items(
+                    ui,
+                    &[
+                        ("Preferences...", C::Preferences),
+                        ("Theme and Font...", C::StyleConfigurator),
+                        ("Keyboard Shortcuts...", C::ShortcutMapper),
+                    ],
+                    out,
+                );
+            });
+            ui.separator();
+            self.item(ui, "Exit", C::Exit, out);
         });
+
         ui.menu_button("Edit", |ui| {
-            self.item(ui, "Undo", Command::Undo, out);
-            self.item(ui, "Redo", Command::Redo, out);
+            self.items(ui, &[("Undo", C::Undo), ("Redo", C::Redo)], out);
             ui.separator();
             let cmd = if cfg!(target_os = "macos") {
                 "⌘"
@@ -339,9 +434,9 @@ impl App {
                 "Ctrl+"
             };
             for (l, c, k) in [
-                ("Cut", Command::Cut, "X"),
-                ("Copy", Command::Copy, "C"),
-                ("Paste", Command::Paste, "V"),
+                ("Cut", C::Cut, "X"),
+                ("Copy", C::Copy, "C"),
+                ("Paste", C::Paste, "V"),
             ] {
                 if ui
                     .add(egui::Button::new(l).shortcut_text(format!("{cmd}{k}")))
@@ -351,43 +446,168 @@ impl App {
                     ui.close();
                 }
             }
-            self.item(ui, "Delete", Command::DeleteSelection, out);
-            self.item(ui, "Select All", Command::SelectAll, out);
-            self.item(ui, "Begin/End Select", Command::BeginEndSelect, out);
-            self.item(
+            self.items(
                 ui,
-                "Begin/End Select in Column Mode",
-                Command::BeginEndSelectColumn,
+                &[("Delete", C::DeleteSelection), ("Select All", C::SelectAll)],
                 out,
             );
             ui.separator();
-            ui.menu_button("Insert", |ui| {
-                self.item(ui, "Date Time (short)", Command::InsertDateTimeShort, out);
-                self.item(ui, "Date Time (long)", Command::InsertDateTimeLong, out);
-                self.item(
+            ui.menu_button("Selection", |ui| {
+                self.items(
                     ui,
-                    "Date Time (customized)",
-                    Command::InsertDateTimeCustom,
+                    &[
+                        ("Begin/End Select", C::BeginEndSelect),
+                        ("Begin/End Column Select", C::BeginEndSelectColumn),
+                        ("Column Editor...", C::ColumnEditor),
+                    ],
+                    out,
+                );
+                ui.separator();
+                let variants = [
+                    ("Any Case, Partial Words", false, false),
+                    ("Match Case", true, false),
+                    ("Whole Words", false, true),
+                    ("Match Case, Whole Words", true, true),
+                ];
+                ui.menu_button("Select All Occurrences", |ui| {
+                    for (l, match_case, whole_word) in variants {
+                        self.item(
+                            ui,
+                            l,
+                            C::MultiSelectAll {
+                                match_case,
+                                whole_word,
+                            },
+                            out,
+                        );
+                    }
+                });
+                ui.menu_button("Add Next Occurrence", |ui| {
+                    for (l, match_case, whole_word) in variants {
+                        self.item(
+                            ui,
+                            l,
+                            C::MultiSelectNext {
+                                match_case,
+                                whole_word,
+                            },
+                            out,
+                        );
+                    }
+                });
+                self.items(
+                    ui,
+                    &[
+                        ("Undo Last Added Occurrence", C::MultiSelectUndo),
+                        ("Skip Occurrence", C::MultiSelectSkip),
+                    ],
                     out,
                 );
             });
-            ui.menu_button("Copy to Clipboard", |ui| {
-                self.item(
+            ui.menu_button("Insert", |ui| {
+                self.items(
                     ui,
-                    "Copy Current Full File Path",
-                    Command::CopyFullPath,
+                    &[
+                        ("Date and Time (Short)", C::InsertDateTimeShort),
+                        ("Date and Time (Long)", C::InsertDateTimeLong),
+                        ("Date and Time (Custom)", C::InsertDateTimeCustom),
+                        ("UUID", C::InsertUuid),
+                    ],
                     out,
                 );
-                self.item(ui, "Copy Current Filename", Command::CopyFileName, out);
-                self.item(ui, "Copy Current Dir. Path", Command::CopyDirPath, out);
-                self.item(ui, "Copy All Filenames", Command::CopyAllNames, out);
-                self.item(ui, "Copy All File Paths", Command::CopyAllPaths, out);
+            });
+            ui.menu_button("Copy Path", |ui| {
+                self.items(
+                    ui,
+                    &[
+                        ("Full File Path", C::CopyFullPath),
+                        ("File Name", C::CopyFileName),
+                        ("Folder Path", C::CopyDirPath),
+                        ("All Open File Names", C::CopyAllNames),
+                        ("All Open File Paths", C::CopyAllPaths),
+                    ],
+                    out,
+                );
+            });
+            ui.separator();
+            ui.menu_button("Lines", |ui| {
+                self.items(
+                    ui,
+                    &[
+                        ("Duplicate Line", C::DuplicateLine),
+                        ("Delete Line", C::DeleteLine),
+                        ("Move Line Up", C::MoveLineUp),
+                        ("Move Line Down", C::MoveLineDown),
+                        ("Swap with Previous Line", C::TransposeLine),
+                        ("Insert Blank Line Above", C::InsertBlankAbove),
+                        ("Insert Blank Line Below", C::InsertBlankBelow),
+                    ],
+                    out,
+                );
+                ui.separator();
+                self.items(
+                    ui,
+                    &[("Split Lines", C::SplitLines), ("Join Lines", C::JoinLines)],
+                    out,
+                );
+                ui.separator();
+                self.items(
+                    ui,
+                    &[
+                        ("Remove Duplicate Lines", C::RemoveDuplicateLines),
+                        (
+                            "Remove Consecutive Duplicates",
+                            C::RemoveConsecutiveDuplicates,
+                        ),
+                        ("Remove Empty Lines", C::RemoveEmptyLines),
+                        (
+                            "Remove Blank Lines (incl. Whitespace)",
+                            C::RemoveEmptyLinesWithBlank,
+                        ),
+                    ],
+                    out,
+                );
+            });
+            ui.menu_button("Sort Lines", |ui| {
+                for m in [
+                    SortMode::LexAsc,
+                    SortMode::LexCiAsc,
+                    SortMode::LocaleAsc,
+                    SortMode::IntAsc,
+                    SortMode::DecCommaAsc,
+                    SortMode::DecDotAsc,
+                    SortMode::LengthAsc,
+                ] {
+                    self.item(ui, App::sort_mode_label(m), C::Sort(m), out);
+                }
+                ui.separator();
+                for m in [
+                    SortMode::LexDesc,
+                    SortMode::LexCiDesc,
+                    SortMode::LocaleDesc,
+                    SortMode::IntDesc,
+                    SortMode::DecCommaDesc,
+                    SortMode::DecDotDesc,
+                    SortMode::LengthDesc,
+                ] {
+                    self.item(ui, App::sort_mode_label(m), C::Sort(m), out);
+                }
+                ui.separator();
+                for m in [SortMode::Reverse, SortMode::Random] {
+                    self.item(ui, App::sort_mode_label(m), C::Sort(m), out);
+                }
             });
             ui.menu_button("Indent", |ui| {
-                self.item(ui, "Increase Line Indent", Command::IndentIncrease, out);
-                self.item(ui, "Decrease Line Indent", Command::IndentDecrease, out);
+                self.items(
+                    ui,
+                    &[
+                        ("Increase Indent", C::IndentIncrease),
+                        ("Decrease Indent", C::IndentDecrease),
+                    ],
+                    out,
+                );
             });
-            ui.menu_button("Convert Case to", |ui| {
+            ui.menu_button("Convert Case", |ui| {
                 for m in [
                     CaseMode::Upper,
                     CaseMode::Lower,
@@ -398,791 +618,414 @@ impl App {
                     CaseMode::Invert,
                     CaseMode::Random,
                 ] {
-                    self.item(ui, App::case_label(m), Command::ConvertCase(m), out);
+                    self.item(ui, App::case_label(m), C::ConvertCase(m), out);
                 }
             });
-            ui.menu_button("Line Operations", |ui| {
-                self.item(ui, "Duplicate Current Line", Command::DuplicateLine, out);
-                self.item(
+            ui.menu_button("Comment", |ui| {
+                self.items(
                     ui,
-                    "Remove Duplicate Lines",
-                    Command::RemoveDuplicateLines,
+                    &[
+                        ("Toggle Line Comment", C::ToggleComment),
+                        ("Comment Lines", C::BlockComment),
+                        ("Uncomment Lines", C::BlockUncomment),
+                        ("Block Comment", C::StreamComment),
+                        ("Block Uncomment", C::StreamUncomment),
+                    ],
                     out,
                 );
-                self.item(
+            });
+            ui.menu_button("Whitespace", |ui| {
+                self.items(
                     ui,
-                    "Remove Consecutive Duplicate Lines",
-                    Command::RemoveConsecutiveDuplicates,
-                    out,
-                );
-                self.item(ui, "Split Lines", Command::SplitLines, out);
-                self.item(ui, "Join Lines", Command::JoinLines, out);
-                self.item(ui, "Move Up Current Line", Command::MoveLineUp, out);
-                self.item(ui, "Move Down Current Line", Command::MoveLineDown, out);
-                self.item(ui, "Remove Empty Lines", Command::RemoveEmptyLines, out);
-                self.item(
-                    ui,
-                    "Remove Empty Lines (Containing Blank characters)",
-                    Command::RemoveEmptyLinesWithBlank,
-                    out,
-                );
-                self.item(
-                    ui,
-                    "Insert Blank Line Above Current",
-                    Command::InsertBlankAbove,
-                    out,
-                );
-                self.item(
-                    ui,
-                    "Insert Blank Line Below Current",
-                    Command::InsertBlankBelow,
-                    out,
-                );
-                self.item(ui, "Delete Current Line", Command::DeleteLine, out);
-                self.item(
-                    ui,
-                    "Transpose Current and Previous Lines",
-                    Command::TransposeLine,
+                    &[
+                        ("Trim Trailing Spaces", C::TrimTrailing),
+                        ("Trim Leading Spaces", C::TrimLeading),
+                        ("Trim Leading and Trailing Spaces", C::TrimBoth),
+                        ("Line Breaks to Spaces", C::EolToSpace),
+                        ("Trim and Line Breaks to Spaces", C::TrimAndEolToSpace),
+                    ],
                     out,
                 );
                 ui.separator();
-                for m in [
-                    SortMode::LexAsc,
-                    SortMode::LexCiAsc,
-                    SortMode::LocaleAsc,
-                    SortMode::IntAsc,
-                    SortMode::DecCommaAsc,
-                    SortMode::DecDotAsc,
-                    SortMode::LengthAsc,
-                    SortMode::LexDesc,
-                    SortMode::LexCiDesc,
-                    SortMode::LocaleDesc,
-                    SortMode::IntDesc,
-                    SortMode::DecCommaDesc,
-                    SortMode::DecDotDesc,
-                    SortMode::LengthDesc,
-                    SortMode::Reverse,
-                    SortMode::Random,
-                ] {
-                    self.item(ui, App::sort_mode_label(m), Command::Sort(m), out);
-                }
-            });
-            ui.menu_button("Comment/Uncomment", |ui| {
-                self.item(
+                self.items(
                     ui,
-                    "Toggle Single Line Comment",
-                    Command::ToggleComment,
+                    &[
+                        ("Tabs to Spaces", C::TabToSpace),
+                        ("Spaces to Tabs (All)", C::SpaceToTabAll),
+                        ("Spaces to Tabs (Leading)", C::SpaceToTabLeading),
+                    ],
                     out,
                 );
-                self.item(ui, "Single Line Comment", Command::BlockComment, out);
-                self.item(ui, "Single Line Uncomment", Command::BlockUncomment, out);
-                self.item(ui, "Block Comment", Command::StreamComment, out);
-                self.item(ui, "Block Uncomment", Command::StreamUncomment, out);
             });
             ui.menu_button("Auto-Completion", |ui| {
-                self.item(ui, "Function Completion", Command::FunctionCompletion, out);
-                self.item(ui, "Word Completion", Command::WordCompletion, out);
-            });
-            ui.menu_button("EOL Conversion", |ui| {
-                let eol = self.active_doc().map(|d| d.eol);
-                self.check(
+                self.items(
                     ui,
-                    "Windows (CR LF)",
-                    eol == Some(crate::encoding::Eol::Crlf),
-                    Command::EolWindows,
-                    out,
-                );
-                self.check(
-                    ui,
-                    "Unix (LF)",
-                    eol == Some(crate::encoding::Eol::Lf),
-                    Command::EolUnix,
-                    out,
-                );
-                self.check(
-                    ui,
-                    "Macintosh (CR)",
-                    eol == Some(crate::encoding::Eol::Cr),
-                    Command::EolMac,
-                    out,
-                );
-            });
-            ui.menu_button("Blank Operations", |ui| {
-                self.item(ui, "Trim Trailing Space", Command::TrimTrailing, out);
-                self.item(ui, "Trim Leading Space", Command::TrimLeading, out);
-                self.item(
-                    ui,
-                    "Trim Leading and Trailing Space",
-                    Command::TrimBoth,
-                    out,
-                );
-                self.item(ui, "EOL to Space", Command::EolToSpace, out);
-                self.item(
-                    ui,
-                    "Trim both and EOL to Space",
-                    Command::TrimAndEolToSpace,
-                    out,
-                );
-                ui.separator();
-                self.item(ui, "TAB to Space", Command::TabToSpace, out);
-                self.item(ui, "Space to TAB (All)", Command::SpaceToTabAll, out);
-                self.item(
-                    ui,
-                    "Space to TAB (Leading)",
-                    Command::SpaceToTabLeading,
-                    out,
-                );
-            });
-            ui.menu_button("On Selection", |ui| {
-                self.item(ui, "Open File", Command::OpenSelectedFile, out);
-                self.item(ui, "Search on Internet", Command::SearchOnInternet, out);
-            });
-            ui.menu_button("Multi-select All", |ui| {
-                self.item(
-                    ui,
-                    "Ignore Case & Whole Word",
-                    Command::MultiSelectAll {
-                        match_case: false,
-                        whole_word: false,
-                    },
-                    out,
-                );
-                self.item(
-                    ui,
-                    "Match Case Only",
-                    Command::MultiSelectAll {
-                        match_case: true,
-                        whole_word: false,
-                    },
-                    out,
-                );
-                self.item(
-                    ui,
-                    "Match Whole Word Only",
-                    Command::MultiSelectAll {
-                        match_case: false,
-                        whole_word: true,
-                    },
-                    out,
-                );
-                self.item(
-                    ui,
-                    "Match Case & Whole Word",
-                    Command::MultiSelectAll {
-                        match_case: true,
-                        whole_word: true,
-                    },
-                    out,
-                );
-            });
-            ui.menu_button("Multi-select Next", |ui| {
-                self.item(
-                    ui,
-                    "Ignore Case & Whole Word",
-                    Command::MultiSelectNext {
-                        match_case: false,
-                        whole_word: false,
-                    },
-                    out,
-                );
-                self.item(
-                    ui,
-                    "Match Case Only",
-                    Command::MultiSelectNext {
-                        match_case: true,
-                        whole_word: false,
-                    },
-                    out,
-                );
-                self.item(
-                    ui,
-                    "Match Whole Word Only",
-                    Command::MultiSelectNext {
-                        match_case: false,
-                        whole_word: true,
-                    },
-                    out,
-                );
-                self.item(
-                    ui,
-                    "Match Case & Whole Word",
-                    Command::MultiSelectNext {
-                        match_case: true,
-                        whole_word: true,
-                    },
-                    out,
-                );
-                self.item(
-                    ui,
-                    "Undo the Latest Added Multi-Select",
-                    Command::MultiSelectUndo,
-                    out,
-                );
-                self.item(
-                    ui,
-                    "Skip Current & Go to Next Multi-select",
-                    Command::MultiSelectSkip,
+                    &[
+                        ("Complete Keyword", C::FunctionCompletion),
+                        ("Complete Word", C::WordCompletion),
+                    ],
                     out,
                 );
             });
             ui.separator();
-            self.item(ui, "Column Editor...", Command::ColumnEditor, out);
-            self.check(
-                ui,
-                "Character Panel",
-                self.settings.show_char_panel,
-                Command::CharacterPanel,
-                out,
-            );
-            self.check(
-                ui,
-                "Clipboard History",
-                self.settings.show_clipboard_history,
-                Command::ClipboardHistory,
-                out,
-            );
-            ui.separator();
+            ui.menu_button("Selected Text", |ui| {
+                self.items(
+                    ui,
+                    &[
+                        ("Open as File", C::OpenSelectedFile),
+                        ("Search on the Web", C::SearchOnInternet),
+                        ("Redact", C::Redact),
+                    ],
+                    out,
+                );
+            });
             let ro = self.active_doc().is_some_and(|d| d.read_only);
-            self.check(ui, "Read-Only", ro, Command::ToggleReadOnly, out);
-            self.item(ui, "Redact Selection", Command::Redact, out);
+            self.check(ui, "Read-Only", ro, C::ToggleReadOnly, out);
         });
+
         ui.menu_button("Search", |ui| {
-            self.item(ui, "Find...", Command::Find, out);
-            self.item(ui, "Find in Files...", Command::FindInFiles, out);
-            self.item(ui, "Find Next", Command::FindNext, out);
-            self.item(ui, "Find Previous", Command::FindPrev, out);
-            self.item(ui, "Select and Find Next", Command::SelectAndFindNext, out);
-            self.item(
+            self.items(
                 ui,
-                "Select and Find Previous",
-                Command::SelectAndFindPrev,
+                &[
+                    ("Find...", C::Find),
+                    ("Replace...", C::Replace),
+                    ("Find in Files...", C::FindInFiles),
+                    ("Incremental Search", C::IncrementalSearch),
+                    ("Mark...", C::Mark),
+                    ("Filter Lines...", C::FilterLines),
+                ],
                 out,
             );
-            self.item(ui, "Find (Volatile) Next", Command::VolatileFindNext, out);
-            self.item(
-                ui,
-                "Find (Volatile) Previous",
-                Command::VolatileFindPrev,
-                out,
-            );
-            self.item(ui, "Replace...", Command::Replace, out);
-            self.item(ui, "Incremental Search", Command::IncrementalSearch, out);
-            self.item(
-                ui,
-                "Search Results Window",
-                Command::SearchResultsWindow,
-                out,
-            );
-            self.item(ui, "Next Search Result", Command::NextSearchResult, out);
-            self.item(ui, "Previous Search Result", Command::PrevSearchResult, out);
-            self.item(ui, "Go to...", Command::GoTo, out);
-            self.item(ui, "Go to Matching Brace", Command::GoToMatchingBrace, out);
-            self.item(
-                ui,
-                "Select All In-between {} [] or ()",
-                Command::SelectToMatchingBrace,
-                out,
-            );
-            self.item(ui, "Mark...", Command::Mark, out);
             ui.separator();
-            ui.menu_button("Change History", |ui| {
-                self.item(ui, "Go to Next Change", Command::ChangeHistoryNext, out);
-                self.item(ui, "Go to Previous Change", Command::ChangeHistoryPrev, out);
-                self.item(ui, "Clear Change History", Command::ChangeHistoryClear, out);
-            });
-            let styles = ["1st", "2nd", "3rd", "4th", "5th"];
-            ui.menu_button("Style All Occurrences of Token", |ui| {
-                for (i, s) in styles.iter().enumerate() {
-                    self.item(
-                        ui,
-                        &format!("Using {s} Style"),
-                        Command::StyleAll(i as u8 + 1),
-                        out,
-                    );
-                }
-            });
-            ui.menu_button("Style One Token", |ui| {
-                for (i, s) in styles.iter().enumerate() {
-                    self.item(
-                        ui,
-                        &format!("Using {s} Style"),
-                        Command::StyleOne(i as u8 + 1),
-                        out,
-                    );
-                }
-            });
-            ui.menu_button("Clear Style", |ui| {
-                for (i, s) in styles.iter().enumerate() {
-                    self.item(
-                        ui,
-                        &format!("Clear {s} Style"),
-                        Command::ClearStyle(i as u8 + 1),
-                        out,
-                    );
-                }
-                self.item(ui, "Clear all Styles", Command::ClearAllStyles, out);
-            });
-            ui.menu_button("Jump up", |ui| {
-                for (i, s) in styles.iter().enumerate() {
-                    self.item(
-                        ui,
-                        &format!("{s} Style"),
-                        Command::JumpPrevStyle(i as u8 + 1),
-                        out,
-                    );
-                }
-                self.item(ui, "Find Mark Style", Command::JumpPrevStyle(0), out);
-            });
-            ui.menu_button("Jump down", |ui| {
-                for (i, s) in styles.iter().enumerate() {
-                    self.item(
-                        ui,
-                        &format!("{s} Style"),
-                        Command::JumpNextStyle(i as u8 + 1),
-                        out,
-                    );
-                }
-                self.item(ui, "Find Mark Style", Command::JumpNextStyle(0), out);
-            });
-            ui.menu_button("Copy Styled Text", |ui| {
-                for (i, s) in styles.iter().enumerate() {
-                    self.item(
-                        ui,
-                        &format!("{s} Style"),
-                        Command::CopyStyledText(i as u8 + 1),
-                        out,
-                    );
-                }
-                self.item(ui, "All Styles", Command::CopyStyledText(0), out);
-            });
-            ui.menu_button("Bookmark", |ui| {
-                self.item(ui, "Toggle Bookmark", Command::ToggleBookmark, out);
-                self.item(ui, "Next Bookmark", Command::NextBookmark, out);
-                self.item(ui, "Previous Bookmark", Command::PrevBookmark, out);
-                self.item(ui, "Clear All Bookmarks", Command::ClearBookmarks, out);
-                self.item(ui, "Cut Bookmarked Lines", Command::CutBookmarkedLines, out);
-                self.item(
+            self.items(
+                ui,
+                &[("Find Next", C::FindNext), ("Find Previous", C::FindPrev)],
+                out,
+            );
+            ui.menu_button("Find Selected Text", |ui| {
+                self.items(
                     ui,
-                    "Copy Bookmarked Lines",
-                    Command::CopyBookmarkedLines,
+                    &[
+                        ("Select and Find Next", C::SelectAndFindNext),
+                        ("Select and Find Previous", C::SelectAndFindPrev),
+                        ("Find Next (Keep Search Text)", C::VolatileFindNext),
+                        ("Find Previous (Keep Search Text)", C::VolatileFindPrev),
+                    ],
                     out,
                 );
-                self.item(
-                    ui,
-                    "Paste to (Replace) Bookmarked Lines",
-                    Command::PasteToBookmarkedLines,
-                    out,
-                );
-                self.item(
-                    ui,
-                    "Remove Bookmarked Lines",
-                    Command::RemoveBookmarkedLines,
-                    out,
-                );
-                self.item(
-                    ui,
-                    "Remove Non-Bookmarked Lines",
-                    Command::RemoveUnbookmarkedLines,
-                    out,
-                );
-                self.item(ui, "Inverse Bookmark", Command::InverseBookmarks, out);
             });
             ui.separator();
-            self.item(
+            self.items(
                 ui,
-                "Find characters in range...",
-                Command::FindCharsInRange,
+                &[
+                    ("Search Results Panel", C::SearchResultsWindow),
+                    ("Next Search Result", C::NextSearchResult),
+                    ("Previous Search Result", C::PrevSearchResult),
+                ],
                 out,
             );
-        });
-        ui.menu_button("View", |ui| {
-            self.check(
-                ui,
-                "Always on Top",
-                self.always_on_top,
-                Command::AlwaysOnTop,
-                out,
-            );
-            self.check(
-                ui,
-                "Toggle Full Screen Mode",
-                self.fullscreen,
-                Command::FullScreen,
-                out,
-            );
-            self.check(ui, "Post-It", self.postit, Command::PostIt, out);
-            self.item(ui, "Distraction Free Mode", Command::DistractionFree, out);
             ui.separator();
-            ui.menu_button("View Current File in", |ui| {
-                self.item(ui, "Default Viewer / Browser", Command::ViewInBrowser, out);
+            self.items(
+                ui,
+                &[
+                    ("Go to Line...", C::GoTo),
+                    ("Go to Matching Bracket", C::GoToMatchingBrace),
+                    ("Select Between Brackets", C::SelectToMatchingBrace),
+                ],
+                out,
+            );
+            ui.separator();
+            let styles = ["Style 1", "Style 2", "Style 3", "Style 4", "Style 5"];
+            ui.menu_button("Highlight", |ui| {
+                ui.menu_button("Highlight All Occurrences", |ui| {
+                    for (i, s) in (1u8..).zip(styles) {
+                        self.item(ui, s, C::StyleAll(i), out);
+                    }
+                });
+                ui.menu_button("Highlight This Occurrence", |ui| {
+                    for (i, s) in (1u8..).zip(styles) {
+                        self.item(ui, s, C::StyleOne(i), out);
+                    }
+                });
+                ui.separator();
+                ui.menu_button("Next Highlight", |ui| {
+                    for (i, s) in (1u8..).zip(styles) {
+                        self.item(ui, s, C::JumpNextStyle(i), out);
+                    }
+                    self.item(ui, "Find Marks", C::JumpNextStyle(0), out);
+                });
+                ui.menu_button("Previous Highlight", |ui| {
+                    for (i, s) in (1u8..).zip(styles) {
+                        self.item(ui, s, C::JumpPrevStyle(i), out);
+                    }
+                    self.item(ui, "Find Marks", C::JumpPrevStyle(0), out);
+                });
+                ui.menu_button("Copy Highlighted Text", |ui| {
+                    for (i, s) in (1u8..).zip(styles) {
+                        self.item(ui, s, C::CopyStyledText(i), out);
+                    }
+                    self.item(ui, "All Styles", C::CopyStyledText(0), out);
+                });
+                ui.separator();
+                ui.menu_button("Clear Highlight", |ui| {
+                    for (i, s) in (1u8..).zip(styles) {
+                        self.item(ui, s, C::ClearStyle(i), out);
+                    }
+                });
+                self.item(ui, "Clear All Highlights", C::ClearAllStyles, out);
             });
-            ui.separator();
-            ui.menu_button("Show Symbol", |ui| {
-                self.check(
+            ui.menu_button("Bookmarks", |ui| {
+                self.items(
                     ui,
-                    "Show Space and Tab",
-                    self.settings.show_whitespace,
-                    Command::ShowWhitespace,
-                    out,
-                );
-                self.check(
-                    ui,
-                    "Show End of Line",
-                    self.settings.show_eol,
-                    Command::ShowEol,
-                    out,
-                );
-                self.check(
-                    ui,
-                    "Show All Characters",
-                    self.settings.show_whitespace && self.settings.show_eol,
-                    Command::ShowAllChars,
+                    &[
+                        ("Toggle Bookmark", C::ToggleBookmark),
+                        ("Next Bookmark", C::NextBookmark),
+                        ("Previous Bookmark", C::PrevBookmark),
+                        ("Clear All Bookmarks", C::ClearBookmarks),
+                        ("Invert Bookmarks", C::InverseBookmarks),
+                    ],
                     out,
                 );
                 ui.separator();
-                self.check(
+                self.items(
                     ui,
-                    "Show Indent Guide",
-                    self.settings.show_indent_guides,
-                    Command::ShowIndentGuides,
-                    out,
-                );
-                self.check(
-                    ui,
-                    "Show Wrap Symbol",
-                    self.settings.show_wrap_symbol,
-                    Command::ShowWrapSymbol,
+                    &[
+                        ("Cut Bookmarked Lines", C::CutBookmarkedLines),
+                        ("Copy Bookmarked Lines", C::CopyBookmarkedLines),
+                        ("Paste over Bookmarked Lines", C::PasteToBookmarkedLines),
+                        ("Delete Bookmarked Lines", C::RemoveBookmarkedLines),
+                        ("Delete Lines Without Bookmarks", C::RemoveUnbookmarkedLines),
+                    ],
                     out,
                 );
             });
-            ui.menu_button("Zoom", |ui| {
-                self.item(ui, "Zoom In", Command::ZoomIn, out);
-                self.item(ui, "Zoom Out", Command::ZoomOut, out);
-                self.item(ui, "Restore Default Zoom", Command::ZoomRestore, out);
-            });
-            ui.menu_button("Move/Clone Current Document", |ui| {
-                self.item(ui, "Move to Other View", Command::MoveToOtherView, out);
-                self.item(ui, "Clone to Other View", Command::CloneToOtherView, out);
-            });
-            ui.menu_button("Tab", |ui| {
-                for i in 0..9 {
-                    self.item(
-                        ui,
-                        &format!(
-                            "{}{} Tab",
-                            i + 1,
-                            match i {
-                                0 => "st",
-                                1 => "nd",
-                                2 => "rd",
-                                _ => "th",
-                            }
-                        ),
-                        Command::GoToTab(i),
-                        out,
-                    );
-                }
-                self.item(ui, "Next Tab", Command::NextTab, out);
-                self.item(ui, "Previous Tab", Command::PrevTab, out);
-                self.item(ui, "Move Tab Forward", Command::MoveTabForward, out);
-                self.item(ui, "Move Tab Backward", Command::MoveTabBackward, out);
-                ui.menu_button("Apply Color to Tab", |ui| {
-                    for i in 0..5u8 {
-                        self.item(
-                            ui,
-                            &format!("Apply Color {}", i + 1),
-                            Command::TabColor(Some(i)),
-                            out,
-                        );
-                    }
-                    self.item(ui, "Remove Color", Command::TabColor(None), out);
-                });
-                self.item(ui, "Pin/Unpin Tab", Command::TogglePin, out);
-            });
-            self.check(
-                ui,
-                "Word wrap",
-                self.settings.word_wrap,
-                Command::WordWrap,
-                out,
-            );
-            self.check(
-                ui,
-                "Syntax Highlighting",
-                self.settings.syntax_highlighting,
-                Command::SyntaxHighlighting,
-                out,
-            );
-            self.item(ui, "Focus on Another View", Command::FocusOtherView, out);
-            ui.separator();
-            self.item(ui, "Fold All", Command::FoldAll, out);
-            self.item(ui, "Unfold All", Command::UnfoldAll, out);
-            self.item(ui, "Collapse Current Level", Command::FoldCurrent, out);
-            self.item(ui, "Uncollapse Current Level", Command::UnfoldCurrent, out);
-            ui.menu_button("Collapse Level", |ui| {
-                for i in 1..=8 {
-                    self.item(ui, &i.to_string(), Command::FoldLevel(i), out);
-                }
-            });
-            ui.menu_button("Uncollapse Level", |ui| {
-                for i in 1..=8 {
-                    self.item(ui, &i.to_string(), Command::UnfoldLevel(i), out);
-                }
+            ui.menu_button("Change History", |ui| {
+                self.items(
+                    ui,
+                    &[
+                        ("Next Change", C::ChangeHistoryNext),
+                        ("Previous Change", C::ChangeHistoryPrev),
+                        ("Clear Change History", C::ChangeHistoryClear),
+                    ],
+                    out,
+                );
             });
             ui.separator();
-            self.item(ui, "Summary...", Command::Summary, out);
-            ui.separator();
-            self.check(
-                ui,
-                "Folder as Workspace",
-                self.settings.show_folder_tree,
-                Command::ToggleFolderTree,
-                out,
-            );
-            self.check(
-                ui,
-                "Document Map",
-                self.settings.show_doc_map,
-                Command::ToggleDocMap,
-                out,
-            );
-            self.check(
-                ui,
-                "Document List",
-                self.settings.show_doc_list,
-                Command::ToggleDocList,
-                out,
-            );
-            self.check(
-                ui,
-                "Function List",
-                self.settings.show_function_list,
-                Command::ToggleFunctionList,
-                out,
-            );
-            ui.separator();
-            self.check(
-                ui,
-                "Synchronize Vertical Scrolling",
-                self.settings.sync_scroll_v,
-                Command::SyncScrollV,
-                out,
-            );
-            self.check(
-                ui,
-                "Synchronize Horizontal Scrolling",
-                self.settings.sync_scroll_h,
-                Command::SyncScrollH,
-                out,
-            );
-            ui.separator();
-            let mon = self.active_doc().is_some_and(|d| d.monitoring);
-            self.check(ui, "Monitoring (tail -f)", mon, Command::Monitoring, out);
-            ui.separator();
-            self.check(
-                ui,
-                "Toolbar",
-                self.settings.show_toolbar,
-                Command::ToggleToolbar,
-                out,
-            );
-            self.check(
-                ui,
-                "Status Bar",
-                self.settings.show_statusbar,
-                Command::ToggleStatusbar,
-                out,
-            );
+            self.item(ui, "Find Characters in Range...", C::FindCharsInRange, out);
         });
+
+        ui.menu_button("View", |ui| {
+            let s = &self.settings;
+            let (wrap, hl, fs) = (s.word_wrap, s.syntax_highlighting, s.font_size);
+            self.check(ui, "Word Wrap", wrap, C::WordWrap, out);
+            self.check(ui, "Syntax Highlighting", hl, C::SyntaxHighlighting, out);
+            ui.menu_button("Font Size", |ui| {
+                self.items(
+                    ui,
+                    &[
+                        ("Increase Font Size", C::FontBigger),
+                        ("Decrease Font Size", C::FontSmaller),
+                        (
+                            "Default Size",
+                            C::SetFontSize(crate::app::DEFAULT_FONT_SIZE),
+                        ),
+                    ],
+                    out,
+                );
+                ui.separator();
+                for size in [9u8, 10, 11, 12, 13, 14, 16, 18, 20, 24, 28] {
+                    let on = (fs - f32::from(size)).abs() < 0.25;
+                    self.check(ui, &format!("{size} pt"), on, C::SetFontSize(size), out);
+                }
+            });
+            ui.menu_button("Show Symbols", |ui| {
+                let s = &self.settings;
+                let (ws, eol, ig, wsym) = (
+                    s.show_whitespace,
+                    s.show_eol,
+                    s.show_indent_guides,
+                    s.show_wrap_symbol,
+                );
+                self.check(ui, "Spaces and Tabs", ws, C::ShowWhitespace, out);
+                self.check(ui, "Line Endings", eol, C::ShowEol, out);
+                self.check(ui, "All Characters", ws && eol, C::ShowAllChars, out);
+                ui.separator();
+                self.check(ui, "Indent Guides", ig, C::ShowIndentGuides, out);
+                self.check(ui, "Wrap Symbol", wsym, C::ShowWrapSymbol, out);
+            });
+            ui.menu_button("Folding", |ui| {
+                self.items(
+                    ui,
+                    &[
+                        ("Fold All", C::FoldAll),
+                        ("Unfold All", C::UnfoldAll),
+                        ("Fold Current Block", C::FoldCurrent),
+                        ("Unfold Current Block", C::UnfoldCurrent),
+                    ],
+                    out,
+                );
+                ui.menu_button("Fold Level", |ui| {
+                    for i in 1..=8 {
+                        self.item(ui, &i.to_string(), C::FoldLevel(i), out);
+                    }
+                });
+                ui.menu_button("Unfold Level", |ui| {
+                    for i in 1..=8 {
+                        self.item(ui, &i.to_string(), C::UnfoldLevel(i), out);
+                    }
+                });
+            });
+            ui.separator();
+            let s = &self.settings;
+            let panels = [
+                ("Document Map", s.show_doc_map, C::ToggleDocMap),
+                ("Document List", s.show_doc_list, C::ToggleDocList),
+                ("Function List", s.show_function_list, C::ToggleFunctionList),
+                ("JSON Tree", s.show_json_tree, C::ToggleJsonTree),
+                (
+                    "Folder as Workspace",
+                    s.show_folder_tree,
+                    C::ToggleFolderTree,
+                ),
+                ("Character Panel", s.show_char_panel, C::CharacterPanel),
+                (
+                    "Clipboard History",
+                    s.show_clipboard_history,
+                    C::ClipboardHistory,
+                ),
+            ];
+            for (l, on, c) in panels {
+                self.check(ui, l, on, c, out);
+            }
+            ui.separator();
+            let s = &self.settings;
+            let (tb, sb) = (s.show_toolbar, s.show_statusbar);
+            self.check(ui, "Toolbar", tb, C::ToggleToolbar, out);
+            self.check(ui, "Status Bar", sb, C::ToggleStatusbar, out);
+            ui.separator();
+            let (top, full, postit) = (self.always_on_top, self.fullscreen, self.postit);
+            self.check(ui, "Always on Top", top, C::AlwaysOnTop, out);
+            self.check(ui, "Full Screen", full, C::FullScreen, out);
+            self.check(ui, "Post-It", postit, C::PostIt, out);
+            self.item(ui, "Distraction-Free Mode", C::DistractionFree, out);
+            ui.separator();
+            self.item(ui, "Document Summary...", C::Summary, out);
+        });
+
         ui.menu_button("Encoding", |ui| {
+            let cur = self.active_doc().map(|d| d.lang);
+            let normal = self.langs.normal();
+            self.check(
+                ui,
+                "Normal Text",
+                cur == Some(normal),
+                C::SetLanguage("normal".into()),
+                out,
+            );
+            ui.separator();
+            for i in self.langs.sorted_for_menu() {
+                let l = &self.langs.langs[i];
+                self.check(
+                    ui,
+                    &l.display,
+                    cur == Some(i),
+                    C::SetLanguage(l.name.clone()),
+                    out,
+                );
+            }
+            ui.separator();
             let cur = self.active_doc().map(|d| d.encoding);
-            for e in [
+            let main = [
                 TextEncoding::Ansi,
                 TextEncoding::Utf8,
                 TextEncoding::Utf8Bom,
                 TextEncoding::Utf16BeBom,
                 TextEncoding::Utf16LeBom,
-            ] {
-                self.check(
-                    ui,
-                    &e.label(),
-                    cur == Some(e),
-                    Command::SetEncoding(e.key()),
-                    out,
-                );
-            }
-            ui.menu_button("Character sets", |ui| {
+            ];
+            ui.menu_button("Encoding", |ui| {
+                for e in main {
+                    self.check(ui, &e.label(), cur == Some(e), C::SetEncoding(e.key()), out);
+                }
+            });
+            ui.menu_button("Character Sets", |ui| {
                 let mut groups: Vec<&str> = CHARSETS.iter().map(|c| c.0).collect();
                 groups.dedup();
                 for g in groups {
                     ui.menu_button(g, |ui| {
                         for c in CHARSETS.iter().filter(|c| c.0 == g) {
                             let e = TextEncoding::Charset(c.2);
-                            self.check(ui, c.1, cur == Some(e), Command::SetEncoding(e.key()), out);
+                            self.check(ui, c.1, cur == Some(e), C::SetEncoding(e.key()), out);
                         }
                     });
                 }
             });
-            ui.separator();
-            for e in [
-                TextEncoding::Ansi,
-                TextEncoding::Utf8,
-                TextEncoding::Utf8Bom,
-                TextEncoding::Utf16BeBom,
-                TextEncoding::Utf16LeBom,
-            ] {
-                self.item(
-                    ui,
-                    &format!("Convert to {}", e.label()),
-                    Command::ConvertEncoding(e.key()),
-                    out,
-                );
-            }
-        });
-        ui.menu_button("Language", |ui| {
-            let cur = self.active_doc().map(|d| d.lang);
-            let normal = self.langs.normal();
-            self.check(
-                ui,
-                "None (Normal Text)",
-                cur == Some(normal),
-                Command::SetLanguage("normal".into()),
-                out,
-            );
-            ui.separator();
-            let sorted = self.langs.sorted_for_menu();
-            let mut letters: Vec<char> = sorted
-                .iter()
-                .filter_map(|&i| {
-                    self.langs.langs[i]
-                        .display
-                        .chars()
-                        .next()
-                        .map(|c| c.to_ascii_uppercase())
-                })
-                .collect();
-            letters.dedup();
-            for letter in letters {
-                ui.menu_button(letter.to_string(), |ui| {
-                    for &i in &sorted {
-                        let l = &self.langs.langs[i];
-                        if l.display.chars().next().map(|c| c.to_ascii_uppercase()) == Some(letter)
-                        {
-                            self.check(
-                                ui,
-                                &l.display,
-                                cur == Some(i),
-                                Command::SetLanguage(l.name.clone()),
-                                out,
-                            );
-                        }
-                    }
-                });
-            }
-        });
-        ui.menu_button("Settings", |ui| {
-            self.item(ui, "Preferences...", Command::Preferences, out);
-            self.item(ui, "Style Configurator...", Command::StyleConfigurator, out);
-            self.item(ui, "Shortcut Mapper...", Command::ShortcutMapper, out);
-        });
-        ui.menu_button("Tools", |ui| {
-            ui.menu_button("MIME Tools", |ui| {
-                self.item(
-                    ui,
-                    "Base64 Encode",
-                    Command::Mime(MimeOp::Base64Encode),
-                    out,
-                );
-                self.item(
-                    ui,
-                    "Base64 Encode (each line)",
-                    Command::Mime(MimeOp::Base64EncodeByLine),
-                    out,
-                );
-                self.item(
-                    ui,
-                    "Base64 URL-safe Encode",
-                    Command::Mime(MimeOp::Base64UrlEncode),
-                    out,
-                );
-                self.item(
-                    ui,
-                    "Base64 Decode",
-                    Command::Mime(MimeOp::Base64Decode),
-                    out,
-                );
-                self.item(
-                    ui,
-                    "Base64 Decode (each line)",
-                    Command::Mime(MimeOp::Base64DecodeByLine),
-                    out,
-                );
-                ui.separator();
-                self.item(ui, "URL Encode", Command::Mime(MimeOp::UrlEncode), out);
-                self.item(ui, "URL Decode", Command::Mime(MimeOp::UrlDecode), out);
-                self.item(
-                    ui,
-                    "URL Decode (+ as space)",
-                    Command::Mime(MimeOp::UrlDecodeForm),
-                    out,
-                );
-                ui.separator();
-                self.item(
-                    ui,
-                    "Quoted-printable Encode",
-                    Command::Mime(MimeOp::QpEncode),
-                    out,
-                );
-                self.item(
-                    ui,
-                    "Quoted-printable Decode",
-                    Command::Mime(MimeOp::QpDecode),
-                    out,
-                );
+            ui.menu_button("Convert to", |ui| {
+                for e in main {
+                    self.item(ui, &e.label(), C::ConvertEncoding(e.key()), out);
+                }
             });
+            ui.menu_button("Line Endings", |ui| {
+                use crate::encoding::Eol;
+                let eol = self.active_doc().map(|d| d.eol);
+                self.check(
+                    ui,
+                    "Windows (CR LF)",
+                    eol == Some(Eol::Crlf),
+                    C::EolWindows,
+                    out,
+                );
+                self.check(
+                    ui,
+                    "Unix and macOS (LF)",
+                    eol == Some(Eol::Lf),
+                    C::EolUnix,
+                    out,
+                );
+                self.check(ui, "Classic Mac (CR)", eol == Some(Eol::Cr), C::EolMac, out);
+            });
+        });
+
+        ui.menu_button("Tools", |ui| {
             ui.menu_button("Format", |ui| {
                 self.item(
                     ui,
-                    "Format Document (auto-detect)",
-                    Command::Format(FormatOp::Auto),
+                    "Format Document (Auto-Detect)",
+                    C::Format(FormatOp::Auto),
                     out,
                 );
                 ui.separator();
-                self.item(
+                self.items(
                     ui,
-                    "JSON: Pretty Print",
-                    Command::Format(FormatOp::JsonPretty),
-                    out,
-                );
-                self.item(
-                    ui,
-                    "JSON: Minify",
-                    Command::Format(FormatOp::JsonMinify),
-                    out,
-                );
-                self.item(
-                    ui,
-                    "JSON: Validate",
-                    Command::Format(FormatOp::JsonValidate),
+                    &[
+                        ("JSON: Pretty Print", C::Format(FormatOp::JsonPretty)),
+                        ("JSON: Minify", C::Format(FormatOp::JsonMinify)),
+                        ("JSON: Validate", C::Format(FormatOp::JsonValidate)),
+                    ],
                     out,
                 );
                 ui.separator();
-                self.item(
+                self.items(
                     ui,
-                    "XML: Pretty Print",
-                    Command::Format(FormatOp::XmlPretty),
+                    &[
+                        ("XML: Pretty Print", C::Format(FormatOp::XmlPretty)),
+                        ("XML: Minify", C::Format(FormatOp::XmlMinify)),
+                        ("XML: Validate", C::Format(FormatOp::XmlValidate)),
+                    ],
                     out,
                 );
-                self.item(
+                ui.separator();
+                self.items(
                     ui,
-                    "XML: Minify (linearize)",
-                    Command::Format(FormatOp::XmlMinify),
-                    out,
-                );
-                self.item(
-                    ui,
-                    "XML: Check Syntax",
-                    Command::Format(FormatOp::XmlValidate),
+                    &[
+                        ("HTML: Pretty Print", C::Format(FormatOp::HtmlPretty)),
+                        ("CSS: Pretty Print", C::Format(FormatOp::CssPretty)),
+                        ("CSS: Minify", C::Format(FormatOp::CssMinify)),
+                        (
+                            "JavaScript / TypeScript: Pretty Print",
+                            C::Format(FormatOp::JsPretty),
+                        ),
+                        ("Markdown: Tidy", C::Format(FormatOp::MarkdownPretty)),
+                    ],
                     out,
                 );
                 ui.separator();
@@ -1192,150 +1035,229 @@ impl App {
                     ui.close();
                 }
             });
+            ui.menu_button("Encode / Decode", |ui| {
+                self.items(
+                    ui,
+                    &[
+                        ("Base64 Encode", C::Mime(MimeOp::Base64Encode)),
+                        (
+                            "Base64 Encode Each Line",
+                            C::Mime(MimeOp::Base64EncodeByLine),
+                        ),
+                        ("Base64 URL-Safe Encode", C::Mime(MimeOp::Base64UrlEncode)),
+                        ("Base64 Decode", C::Mime(MimeOp::Base64Decode)),
+                        (
+                            "Base64 Decode Each Line",
+                            C::Mime(MimeOp::Base64DecodeByLine),
+                        ),
+                    ],
+                    out,
+                );
+                ui.separator();
+                self.items(
+                    ui,
+                    &[
+                        ("URL Encode", C::Mime(MimeOp::UrlEncode)),
+                        ("URL Decode", C::Mime(MimeOp::UrlDecode)),
+                        ("URL Decode (+ as Space)", C::Mime(MimeOp::UrlDecodeForm)),
+                    ],
+                    out,
+                );
+                ui.separator();
+                self.items(
+                    ui,
+                    &[
+                        ("Quoted-Printable Encode", C::Mime(MimeOp::QpEncode)),
+                        ("Quoted-Printable Decode", C::Mime(MimeOp::QpDecode)),
+                    ],
+                    out,
+                );
+            });
+            ui.menu_button("Data", |ui| {
+                use crate::commands::DataOp;
+                self.items(
+                    ui,
+                    &[
+                        ("CSV to JSON", C::Data(DataOp::CsvToJson)),
+                        ("JSON to CSV", C::Data(DataOp::JsonToCsv)),
+                        ("CSV to TSV", C::Data(DataOp::CsvToTsv)),
+                        ("TSV to CSV", C::Data(DataOp::TsvToCsv)),
+                    ],
+                    out,
+                );
+            });
+            ui.menu_button("Hash", |ui| {
+                for algo in [
+                    HashAlgo::Md5,
+                    HashAlgo::Sha1,
+                    HashAlgo::Sha256,
+                    HashAlgo::Sha512,
+                ] {
+                    ui.menu_button(algo.name(), |ui| {
+                        self.items(
+                            ui,
+                            &[
+                                ("Hash Text...", C::Hash(algo, HashSource::Text)),
+                                ("Hash Files...", C::Hash(algo, HashSource::Files)),
+                                (
+                                    "Copy Hash of Selection",
+                                    C::Hash(algo, HashSource::SelectionToClipboard),
+                                ),
+                            ],
+                            out,
+                        );
+                    });
+                }
+            });
             ui.separator();
-            for algo in [
-                HashAlgo::Md5,
-                HashAlgo::Sha1,
-                HashAlgo::Sha256,
-                HashAlgo::Sha512,
-            ] {
-                ui.menu_button(algo.name(), |ui| {
-                    self.item(
+            self.item(ui, "Date and Unix Time...", C::DateTimeTool, out);
+        });
+
+        ui.menu_button("Compare", |ui| {
+            self.items(
+                ui,
+                &[
+                    ("Compare", C::Compare),
+                    ("Compare Selected Lines", C::CompareSelections),
+                    ("Compare with Clipboard", C::CompareClipboard),
+                    ("Compare with Last Save", C::CompareSaved),
+                    ("New Blank Compare", C::CompareBlank),
+                    ("Show Differences Inline", C::CompareInline),
+                ],
+                out,
+            );
+            ui.separator();
+            ui.add_enabled_ui(self.compare.is_some(), |ui| {
+                self.items(
+                    ui,
+                    &[
+                        ("Next Difference", C::CompareNext),
+                        ("Previous Difference", C::ComparePrev),
+                        ("Copy Difference to Right", C::CompareCopyToRight),
+                        ("Copy Difference to Left", C::CompareCopyToLeft),
+                        ("Copy All to Right", C::CompareCopyAll(true)),
+                        ("Copy All to Left", C::CompareCopyAll(false)),
+                        ("Swap Sides", C::CompareSwap),
+                        ("Compare Again", C::CompareRefresh),
+                        ("End Compare", C::CompareClear),
+                    ],
+                    out,
+                );
+            });
+            ui.separator();
+            ui.menu_button("Options", |ui| {
+                let o = self.settings.compare.clone();
+                for (i, l, on) in [
+                    (0u8, "Ignore Whitespace", o.ignore_whitespace),
+                    (1, "Ignore Case", o.ignore_case),
+                    (2, "Ignore Empty Lines", o.ignore_empty_lines),
+                    (3, "Highlight Changed Words", o.word_diff),
+                    (5, "Show Moved Lines", o.detect_moves),
+                    (4, "Compare Again While Editing", o.auto),
+                    (6, "Hide Side Panels While Comparing", o.hide_panels),
+                ] {
+                    self.check(ui, l, on, C::CompareOption(i), out);
+                }
+                ui.separator();
+                let label = match &o.ignore_pattern {
+                    Some(p) => format!("Ignore Pattern: {p}"),
+                    None => "Ignore Text Matching the Find Box (Regex)".into(),
+                };
+                self.check(
+                    ui,
+                    &label,
+                    o.ignore_pattern.is_some(),
+                    C::CompareIgnoreFindText,
+                    out,
+                );
+                if o.ignore_pattern.is_some() {
+                    self.item(ui, "Clear Ignore Pattern", C::CompareClearIgnore, out);
+                }
+            });
+        });
+
+        ui.menu_button("Window", |ui| {
+            let (fm, term) = if cfg!(target_os = "macos") {
+                ("Show in Finder", "Open Terminal Here")
+            } else {
+                ("Show in Explorer", "Open Command Prompt Here")
+            };
+            self.items(
+                ui,
+                &[
+                    (fm, C::OpenContainingFolder),
+                    (term, C::OpenTerminalHere),
+                    ("Open in Default App", C::OpenInDefaultViewer),
+                    ("Open in Browser", C::ViewInBrowser),
+                ],
+                out,
+            );
+            ui.separator();
+            self.items(
+                ui,
+                &[
+                    ("Move to Other View", C::MoveToOtherView),
+                    ("Clone to Other View", C::CloneToOtherView),
+                    ("Move to New Window", C::MoveToNewWindow),
+                    ("Switch to Other View", C::FocusOtherView),
+                ],
+                out,
+            );
+            let (sv, sh) = (self.settings.sync_scroll_v, self.settings.sync_scroll_h);
+            self.check(ui, "Sync Vertical Scrolling", sv, C::SyncScrollV, out);
+            self.check(ui, "Sync Horizontal Scrolling", sh, C::SyncScrollH, out);
+            ui.separator();
+            ui.menu_button("Tabs", |ui| {
+                self.items(
+                    ui,
+                    &[
+                        ("Next Tab", C::NextTab),
+                        ("Previous Tab", C::PrevTab),
+                        ("Move Tab Right", C::MoveTabForward),
+                        ("Move Tab Left", C::MoveTabBackward),
+                        ("Pin/Unpin Tab", C::TogglePin),
+                    ],
+                    out,
+                );
+                ui.menu_button("Tab Color", |ui| {
+                    for i in 0..5u8 {
+                        self.item(ui, &format!("Color {}", i + 1), C::TabColor(Some(i)), out);
+                    }
+                    self.item(ui, "No Color", C::TabColor(None), out);
+                });
+                ui.menu_button("Sort Tabs", |ui| {
+                    self.items(
                         ui,
-                        "Generate...",
-                        Command::Hash(algo, HashSource::Text),
-                        out,
-                    );
-                    self.item(
-                        ui,
-                        "Generate from files...",
-                        Command::Hash(algo, HashSource::Files),
-                        out,
-                    );
-                    self.item(
-                        ui,
-                        "Generate from selection into clipboard",
-                        Command::Hash(algo, HashSource::SelectionToClipboard),
+                        &[
+                            ("Name A to Z", C::SortTabs(TabSort::NameAsc)),
+                            ("Name Z to A", C::SortTabs(TabSort::NameDesc)),
+                            ("Path A to Z", C::SortTabs(TabSort::PathAsc)),
+                            ("Path Z to A", C::SortTabs(TabSort::PathDesc)),
+                            ("Type A to Z", C::SortTabs(TabSort::TypeAsc)),
+                            ("Type Z to A", C::SortTabs(TabSort::TypeDesc)),
+                        ],
                         out,
                     );
                 });
-            }
-        });
-        ui.menu_button("Run", |ui| {
-            self.item(ui, "Run...", Command::RunDialog, out);
-            if !self.settings.run_commands.is_empty() {
-                ui.separator();
-                for (i, (name, _)) in self.settings.run_commands.iter().enumerate() {
-                    if ui.button(name).clicked() {
-                        out.push(Command::RunSaved(i));
-                        ui.close();
-                    }
-                }
-            }
-            ui.separator();
-            self.item(ui, "Launch in Default Browser", Command::ViewInBrowser, out);
-        });
-        ui.menu_button("Compare", |ui| {
-            self.item(ui, "Compare (two views / next tab)", Command::Compare, out);
-            self.item(ui, "Compare with Clipboard", Command::CompareClipboard, out);
-            self.item(ui, "Compare to Last Save", Command::CompareSaved, out);
-            ui.separator();
-            let on = self.compare.is_some();
-            ui.add_enabled_ui(on, |ui| {
-                self.item(ui, "Next Difference", Command::CompareNext, out);
-                self.item(ui, "Previous Difference", Command::ComparePrev, out);
-                self.item(
-                    ui,
-                    "Copy Difference to Right",
-                    Command::CompareCopyToRight,
-                    out,
-                );
-                self.item(
-                    ui,
-                    "Copy Difference to Left",
-                    Command::CompareCopyToLeft,
-                    out,
-                );
-                self.item(ui, "Re-compare", Command::CompareRefresh, out);
-                self.item(ui, "Clear Compare", Command::CompareClear, out);
             });
-            ui.separator();
-            let o = self.settings.compare.clone();
-            self.check(
-                ui,
-                "Ignore Whitespace",
-                o.ignore_whitespace,
-                Command::CompareOption(0),
-                out,
-            );
-            self.check(
-                ui,
-                "Ignore Case",
-                o.ignore_case,
-                Command::CompareOption(1),
-                out,
-            );
-            self.check(
-                ui,
-                "Ignore Empty Lines",
-                o.ignore_empty_lines,
-                Command::CompareOption(2),
-                out,
-            );
-            self.check(
-                ui,
-                "Highlight Changed Words",
-                o.word_diff,
-                Command::CompareOption(3),
-                out,
-            );
-            self.check(
-                ui,
-                "Re-compare Automatically",
-                o.auto,
-                Command::CompareOption(4),
-                out,
-            );
-        });
-        ui.menu_button("Window", |ui| {
-            self.item(ui, "Windows...", Command::WindowsDialog, out);
-            ui.menu_button("Sort By", |ui| {
-                self.item(ui, "Name A to Z", Command::SortTabs(TabSort::NameAsc), out);
-                self.item(ui, "Name Z to A", Command::SortTabs(TabSort::NameDesc), out);
-                self.item(ui, "Path A to Z", Command::SortTabs(TabSort::PathAsc), out);
-                self.item(ui, "Path Z to A", Command::SortTabs(TabSort::PathDesc), out);
-                self.item(ui, "Type A to Z", Command::SortTabs(TabSort::TypeAsc), out);
-                self.item(ui, "Type Z to A", Command::SortTabs(TabSort::TypeDesc), out);
-            });
+            self.item(ui, "All Open Documents...", C::WindowsDialog, out);
             ui.separator();
             let pane = self.focused;
             for (i, id) in self.panes[pane].tabs.iter().enumerate().take(20) {
                 if let Some(d) = self.docs.get(id) {
                     let on = i == self.panes[pane].active;
-                    if ui
-                        .button(format!(
-                            "{}{}: {}",
-                            if on { "• " } else { "    " },
-                            i + 1,
-                            d.display_name()
-                        ))
-                        .clicked()
-                    {
-                        out.push(Command::GoToTab(i));
+                    let label = format!(
+                        "{}{}: {}",
+                        if on { "• " } else { "    " },
+                        i + 1,
+                        d.display_name()
+                    );
+                    if ui.button(label).clicked() {
+                        out.push(C::GoToTab(i));
                         ui.close();
                     }
                 }
             }
-        });
-        ui.menu_button("?", |ui| {
-            self.item(
-                ui,
-                "Command Line Arguments...",
-                Command::CommandLineHelp,
-                out,
-            );
-            self.item(ui, "Debug Info...", Command::DebugInfo, out);
-            self.item(ui, &format!("About {APP_NAME}"), Command::About, out);
         });
     }
 
@@ -1384,20 +1306,17 @@ impl App {
             b(ui, Icon::Find, "Find", Command::Find, false);
             b(ui, Icon::Replace, "Replace", Command::Replace, false);
             ui.separator();
-            b(ui, Icon::ZoomIn, "Zoom In", Command::ZoomIn, false);
-            b(ui, Icon::ZoomOut, "Zoom Out", Command::ZoomOut, false);
-            ui.separator();
             b(
                 ui,
                 Icon::SyncV,
-                "Synchronize Vertical Scrolling",
+                "Sync Vertical Scrolling",
                 Command::SyncScrollV,
                 self.settings.sync_scroll_v,
             );
             b(
                 ui,
                 Icon::SyncH,
-                "Synchronize Horizontal Scrolling",
+                "Sync Horizontal Scrolling",
                 Command::SyncScrollH,
                 self.settings.sync_scroll_h,
             );
@@ -1405,7 +1324,7 @@ impl App {
             b(
                 ui,
                 Icon::Wrap,
-                "Word wrap",
+                "Word Wrap",
                 Command::WordWrap,
                 self.settings.word_wrap,
             );
@@ -1426,7 +1345,7 @@ impl App {
             b(
                 ui,
                 Icon::IndentGuide,
-                "Show Indent Guide",
+                "Show Indent Guides",
                 Command::ShowIndentGuides,
                 self.settings.show_indent_guides,
             );
@@ -1460,14 +1379,25 @@ impl App {
                 self.settings.show_folder_tree,
             );
             ui.separator();
-            let mon = self.active_doc().is_some_and(|d| d.monitoring);
-            b(
-                ui,
-                Icon::Monitor,
-                "Monitoring (tail -f)",
-                Command::Monitoring,
-                mon,
-            );
+            // Type a line number and press Enter to jump there.
+            let r = ui
+                .add(
+                    egui::TextEdit::singleline(&mut self.goto_line_text)
+                        .hint_text("Line #")
+                        .desired_width(70.0),
+                )
+                .on_hover_text("Type a line number and press Enter");
+            self.goto_line_text.retain(|c| c.is_ascii_digit());
+            if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                if let (Some(id), Ok(n)) = (self.active_id(), self.goto_line_text.parse::<usize>())
+                {
+                    self.pending_goto = Some((id, n.saturating_sub(1), 0));
+                    self.request_focus_editor = true;
+                    // The jump happens at the start of the next frame.
+                    ui.ctx().request_repaint();
+                }
+                self.goto_line_text.clear();
+            }
         });
     }
 
@@ -1557,7 +1487,13 @@ impl App {
                     }
                 });
                 ui.separator();
-                ui.menu_button(eol.label(), |ui| {
+                let mixed = self.active_doc().is_some_and(Document::has_mixed_eol);
+                let eol_label = if mixed {
+                    format!("Mixed ({})", eol.label())
+                } else {
+                    eol.label().to_string()
+                };
+                ui.menu_button(eol_label, |ui| {
                     for (l, c) in [
                         ("Windows (CR LF)", Command::EolWindows),
                         ("Unix (LF)", Command::EolUnix),
@@ -1881,22 +1817,30 @@ impl App {
                             resp.context_menu(|ui| {
                                 let items: Vec<(&str, Command)> = vec![
                                     ("Close", Command::Close),
-                                    ("Close All BUT This", Command::CloseAllButCurrent),
+                                    ("Close All but This", Command::CloseAllButCurrent),
                                     ("Close All to the Left", Command::CloseAllToLeft),
                                     ("Close All to the Right", Command::CloseAllToRight),
                                     ("Close All Unchanged", Command::CloseAllUnchanged),
                                     ("Save", Command::Save),
                                     ("Save As...", Command::SaveAs),
                                     ("Rename...", Command::Rename),
-                                    ("Reload", Command::Reload),
-                                    ("Open Containing Folder", Command::OpenContainingFolder),
+                                    ("Reload from Disk", Command::Reload),
+                                    (
+                                        if cfg!(target_os = "macos") {
+                                            "Show in Finder"
+                                        } else {
+                                            "Show in Explorer"
+                                        },
+                                        Command::OpenContainingFolder,
+                                    ),
                                     ("Copy Full File Path", Command::CopyFullPath),
-                                    ("Copy Filename", Command::CopyFileName),
-                                    ("Copy Current Dir. Path", Command::CopyDirPath),
+                                    ("Copy File Name", Command::CopyFileName),
+                                    ("Copy Folder Path", Command::CopyDirPath),
                                     ("Read-Only", Command::ToggleReadOnly),
                                     ("Pin/Unpin Tab", Command::TogglePin),
                                     ("Move to Other View", Command::MoveToOtherView),
                                     ("Clone to Other View", Command::CloneToOtherView),
+                                    ("Move to New Window", Command::MoveToNewWindow),
                                 ];
                                 if i != active
                                     && let Some(&cur) = tabs.get(active)
@@ -1911,7 +1855,7 @@ impl App {
                                         ui.close();
                                     }
                                 }
-                                ui.menu_button("Apply Color to Tab", |ui| {
+                                ui.menu_button("Tab Color", |ui| {
                                     for c in 0..5u8 {
                                         let txt = RichText::new(format!("■ Color {}", c + 1))
                                             .color(TAB_COLORS[usize::from(c)]);
@@ -1920,7 +1864,7 @@ impl App {
                                             ui.close();
                                         }
                                     }
-                                    if ui.button("Remove Color").clicked() {
+                                    if ui.button("No Color").clicked() {
                                         ctx_cmds.push((i, Command::TabColor(None)));
                                         ui.close();
                                     }
@@ -2002,6 +1946,18 @@ mod bench {
 
     use crate::app::{App, StartupArgs};
 
+    /// Tests share one process, and the settings folder comes from an
+    /// environment variable; hold this while a test uses its own folder.
+    fn use_config_dir(dir: impl AsRef<std::path::Path>) -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let guard = LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // SAFETY: only these tests change the variable, one at a time under the lock.
+        unsafe { std::env::set_var("SUPERFASTNOTEPAD_CONFIG_DIR", dir.as_ref()) };
+        guard
+    }
+
     fn stats(name: &str, t: &mut [Duration]) {
         t.sort_unstable();
         let n = t.len();
@@ -2013,6 +1969,261 @@ mod bench {
         );
     }
 
+    /// Opens the new tool windows and renamed dialogs off-screen and checks
+    /// they draw, and that the font size commands stay within limits.
+    #[test]
+    fn dialogs_and_font_commands() {
+        let cfg = std::env::temp_dir().join("superfastnotepad-dialog-test");
+        let _ = std::fs::remove_dir_all(&cfg);
+        let _config = use_config_dir(cfg);
+        let ctx = egui::Context::default();
+        crate::setup_fonts(&ctx).unwrap();
+        let mut app = App::new(StartupArgs {
+            files: Vec::new(),
+            line: None,
+            column: None,
+            lang: None,
+            no_session: true,
+            read_only: false,
+            always_on_top: false,
+        });
+        app.run(crate::commands::Command::DateTimeTool);
+        app.dialogs.style_config = true;
+        app.dialogs.shortcut_mapper = true;
+        app.dialogs.windows = true;
+        for _ in 0..3 {
+            let input = RawInput {
+                screen_rect: Some(Rect::from_min_size(
+                    pos2(0.0, 0.0),
+                    egui::vec2(1400.0, 900.0),
+                )),
+                ..Default::default()
+            };
+            let _ = ctx.run_ui(input, |ui| app.frame(ui));
+        }
+        assert!(app.dialogs.datetime.is_some());
+        app.settings.font_size = 47.0;
+        app.run(crate::commands::Command::FontBigger);
+        app.run(crate::commands::Command::FontBigger);
+        assert!((app.settings.font_size - 48.0).abs() < f32::EPSILON);
+        app.run(crate::commands::Command::SetFontSize(7));
+        app.run(crate::commands::Command::FontSmaller);
+        app.run(crate::commands::Command::FontSmaller);
+        assert!((app.settings.font_size - 6.0).abs() < f32::EPSILON);
+        // Following the system light/dark setting.
+        assert!(app.settings.follow_system_theme);
+        app.follow_system_theme(true);
+        assert_eq!(app.themes.themes[app.theme_idx].name, "Dark");
+        app.follow_system_theme(false);
+        assert_eq!(app.themes.themes[app.theme_idx].name, "Light");
+        // Picking a theme while the system is dark changes the dark theme.
+        app.follow_system_theme(true);
+        let midnight = app.themes.index_of("Midnight");
+        app.set_theme(midnight);
+        assert_eq!(app.settings.dark_theme, "Midnight");
+        assert_eq!(app.settings.theme, "Light");
+        app.settings.follow_system_theme = false;
+        app.follow_system_theme(false);
+        assert_eq!(app.themes.themes[app.theme_idx].name, "Midnight");
+        app.run(crate::commands::Command::InsertUuid);
+        let id = app.active_id().unwrap();
+        assert_eq!(app.docs[&id].len_chars(), 36);
+    }
+
+    /// Blank compare, moved lines, hidden panels, swap, copy all and compare
+    /// selected lines, driven through commands.
+    #[test]
+    fn compare_session_features() {
+        use crate::commands::Command as C;
+        let dir = std::env::temp_dir().join("superfastnotepad-compare-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _config = use_config_dir(dir);
+        let mut app = App::new(StartupArgs {
+            files: Vec::new(),
+            line: None,
+            column: None,
+            lang: None,
+            no_session: true,
+            read_only: false,
+            always_on_top: false,
+        });
+        app.settings.show_function_list = true;
+        app.run(C::CompareBlank);
+        assert!(
+            !app.settings.show_function_list,
+            "panels hidden while comparing"
+        );
+        let s = app.compare.as_ref().unwrap();
+        let (l, r) = (s.left, s.right);
+        assert_eq!(app.docs[&l].display_name(), "Original");
+        let set = |app: &mut App, id, text: &str| {
+            let d = app.docs.get_mut(&id).unwrap();
+            let len = d.len_chars();
+            d.edit(
+                vec![(0, len, text.into())],
+                &[],
+                crate::document::EditKind::Other,
+                |_| Vec::new(),
+            );
+        };
+        set(&mut app, l, "a\nb\nc\nd");
+        set(&mut app, r, "b\nc\nD\na");
+        app.run(C::CompareRefresh);
+        assert_eq!(app.compare.as_ref().unwrap().stats, (0, 0, 1, 1));
+        app.run(C::CompareSwap);
+        let s = app.compare.as_ref().unwrap();
+        assert_eq!((s.left, s.right), (r, l));
+        assert!(!app.settings.show_function_list);
+        app.run(C::CompareCopyAll(true));
+        assert_eq!(app.docs[&l].rope.to_string(), "b\nc\nD\na");
+        assert!(app.compare.as_ref().unwrap().hunks.is_empty());
+        app.run(C::CompareClear);
+        assert!(app.settings.show_function_list, "panels shown again");
+        // Compare selected lines: selections extended to whole lines.
+        let (l, r) = (
+            app.panes[0].active_doc().unwrap(),
+            app.panes[1].active_doc().unwrap(),
+        );
+        set(&mut app, l, "x\none\ntwo\ny");
+        set(&mut app, r, "one\nTWO");
+        app.views.get_mut(&(0, l)).unwrap().sels =
+            vec![crate::document::Selection { anchor: 3, head: 8 }];
+        app.views.get_mut(&(1, r)).unwrap().sels =
+            vec![crate::document::Selection { anchor: 0, head: 7 }];
+        app.run(C::CompareSelections);
+        let s = app.compare.as_ref().unwrap();
+        assert_eq!(s.snapshots.len(), 2);
+        assert_eq!(app.docs[&s.left].rope.to_string(), "one\ntwo");
+        assert_eq!(s.stats.2, 1);
+        let snaps = s.snapshots.clone();
+        app.run(C::CompareClear);
+        assert!(snaps.iter().all(|id| !app.docs.contains_key(id)));
+        // Inline view of the two views: removed line, then its replacement.
+        set(&mut app, l, "same\nold\nend");
+        set(&mut app, r, "same\nnew\nend");
+        app.focused = 0;
+        app.run(C::CompareInline);
+        let id = app.active_id().unwrap();
+        let d = &app.docs[&id];
+        assert!(d.read_only && d.transient);
+        assert_eq!(d.rope.to_string(), "same\nold\nnew\nend");
+        use crate::compare::LineKind as K;
+        let decor = app.views[&(0, id)].compare_decor(d).expect("decorated");
+        assert_eq!(decor.kinds, vec![K::Same, K::Removed, K::Added, K::Same]);
+        assert!(
+            app.build_session(false)
+                .files
+                .iter()
+                .all(|f| !f.untitled_name.starts_with("Diff"))
+        );
+    }
+
+    /// An unchanged document's backup isn't rewritten; an edited one is.
+    #[test]
+    fn backups_rewrite_only_changed_documents() {
+        let dir = std::env::temp_dir().join("superfastnotepad-backup-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _config = use_config_dir(dir);
+        let mut app = App::new(StartupArgs {
+            files: Vec::new(),
+            line: None,
+            column: None,
+            lang: None,
+            no_session: true,
+            read_only: false,
+            always_on_top: false,
+        });
+        let id = app.active_id().unwrap();
+        app.with_active(|d, v, _| {
+            crate::ops::insert_text(d, v, "hello", crate::document::EditKind::Other)
+        });
+        let first = app.build_session(true);
+        let path = std::path::PathBuf::from(first.files[0].backup.clone().expect("backup written"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "hello");
+        let (v1, t1, _) = app.backups_written[&id].clone();
+        app.build_session(true);
+        let (v2, t2, _) = app.backups_written[&id].clone();
+        assert_eq!((v1, t1), (v2, t2), "unchanged document was rewritten");
+        app.with_active(|d, v, _| {
+            crate::ops::insert_text(d, v, "!", crate::document::EditKind::Other)
+        });
+        app.build_session(true);
+        assert_ne!(app.backups_written[&id].0, v1);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "hello!");
+    }
+
+    /// Filters a log off-screen: only matching lines stay visible, the count
+    /// is right, and closing the bar shows every line again.
+    #[test]
+    fn line_filter_hides_other_lines() {
+        let dir = std::env::temp_dir().join("superfastnotepad-filter-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("app.log");
+        let mut text = String::new();
+        for i in 0..2000 {
+            let level = if i % 100 == 7 { "ERROR" } else { "INFO" };
+            text.push_str(&format!(
+                "2026-10-30 10:00:{:02} {level} request {i}\n",
+                i % 60
+            ));
+        }
+        std::fs::write(&log, &text).unwrap();
+        let _config = use_config_dir(dir.join("cfg"));
+        let ctx = egui::Context::default();
+        crate::setup_fonts(&ctx).unwrap();
+        let mut app = App::new(StartupArgs {
+            files: vec![log.display().to_string()],
+            line: None,
+            column: None,
+            lang: None,
+            no_session: true,
+            read_only: false,
+            always_on_top: false,
+        });
+        let mut time = 0.0;
+        let mut frame = |app: &mut App| {
+            time += 0.05;
+            let input = RawInput {
+                screen_rect: Some(Rect::from_min_size(
+                    pos2(0.0, 0.0),
+                    egui::vec2(1200.0, 800.0),
+                )),
+                time: Some(time),
+                ..Default::default()
+            };
+            let _ = ctx.run_ui(input, |ui| app.frame(ui));
+        };
+        frame(&mut app);
+        app.run(crate::commands::Command::FilterLines);
+        app.filter.query.text = "error".into();
+        for _ in 0..200 {
+            frame(&mut app);
+            if app.filter.last.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        let id = app.active_id().unwrap();
+        let shown = app.docs[&id].line_filter.clone().expect("filter applied");
+        assert_eq!(shown.len(), 20);
+        assert!(shown.iter().all(|&l| l % 100 == 7));
+        assert_eq!(app.filter.last.as_ref().unwrap().total, 2001);
+        // Export copies just those lines into a new tab.
+        app.run(crate::commands::Command::ExportFilteredLines);
+        let new_id = app.active_id().unwrap();
+        assert_ne!(new_id, id);
+        assert_eq!(app.docs[&new_id].rope.to_string().lines().count(), 20);
+        // Back on the log, closing the bar removes the filter.
+        app.activate(app.focused, id);
+        frame(&mut app);
+        assert!(app.docs[&id].line_filter.is_some());
+        app.filter.open = false;
+        frame(&mut app);
+        assert_eq!(app.active_id(), Some(id));
+        assert!(app.docs[&id].line_filter.is_none());
+    }
+
     /// Runs the whole UI off-screen (no window, no GPU) and times building
     /// and tessellating frames while idle, scrolling and typing.
     #[test]
@@ -2021,8 +2232,7 @@ mod bench {
         let path = std::env::var("BENCH_FILE").expect("BENCH_FILE");
         let cfg = std::env::temp_dir().join("superfastnotepad-bench");
         let _ = std::fs::remove_dir_all(&cfg);
-        // SAFETY: set before any other thread reads the environment.
-        unsafe { std::env::set_var("SUPERFASTNOTEPAD_CONFIG_DIR", &cfg) };
+        let _config = use_config_dir(cfg);
         for highlight in [false, true] {
             let ctx = egui::Context::default();
             crate::setup_fonts(&ctx).unwrap();

@@ -36,24 +36,7 @@ impl Eol {
 
     /// Picks the dominant line ending in `text`.
     pub fn detect(text: &str) -> Option<Self> {
-        let b = text.as_bytes();
-        let (mut crlf, mut lf, mut cr) = (0usize, 0usize, 0usize);
-        let mut i = 0;
-        while i < b.len() {
-            match b[i] {
-                b'\r' => {
-                    if i + 1 < b.len() && b[i + 1] == b'\n' {
-                        crlf += 1;
-                        i += 1;
-                    } else {
-                        cr += 1;
-                    }
-                }
-                b'\n' => lf += 1,
-                _ => {}
-            }
-            i += 1;
-        }
+        let [crlf, lf, cr] = Self::count(text);
         if crlf + lf + cr == 0 {
             return None;
         }
@@ -65,6 +48,32 @@ impl Eol {
             Self::Cr
         })
     }
+
+    /// Counts line endings in `text`: [CR LF, LF, CR].
+    pub fn count(text: &str) -> [usize; 3] {
+        let b = text.as_bytes();
+        let mut n = [0usize; 3];
+        let mut i = 0;
+        while let Some(off) = memchr2(b'\r', b'\n', &b[i..]) {
+            let j = i + off;
+            if b[j] == b'\n' {
+                n[1] += 1;
+                i = j + 1;
+            } else if b.get(j + 1) == Some(&b'\n') {
+                n[0] += 1;
+                i = j + 2;
+            } else {
+                n[2] += 1;
+                i = j + 1;
+            }
+        }
+        n
+    }
+}
+
+/// Position of the first `a` or `b` in `hay`.
+fn memchr2(a: u8, b: u8, hay: &[u8]) -> Option<usize> {
+    hay.iter().position(|&c| c == a || c == b)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

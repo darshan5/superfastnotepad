@@ -150,13 +150,14 @@ pub struct Document {
     pub untitled_name: String,
     pub encoding: TextEncoding,
     pub eol: Eol,
+    /// Line endings in the text: [CR LF, LF, CR], kept up to date by edits.
+    pub eol_counts: [usize; 3],
     pub lang: usize,
     pub read_only: bool,
     pub version: u64,
     pub meta: Vec<LineMeta>,
     pub marks: Vec<Mark>,
     pub mtime: Option<SystemTime>,
-    pub monitoring: bool,
     pub tab_color: Option<u8>,
     pub pinned: bool,
     /// Set when the encoding was converted (no text change but still unsaved).
@@ -170,6 +171,11 @@ pub struct Document {
     pub tab_width: usize,
     /// Bumped whenever fold state changes (layout cache key).
     pub fold_gen: u64,
+    /// Lines left visible by the line filter, if one is active.
+    pub line_filter: Option<Arc<Vec<usize>>>,
+    /// A temporary, generated view (compare snapshot, inline diff) that
+    /// isn't saved with the session.
+    pub transient: bool,
 }
 
 const CHANGE_LOG_MAX: usize = 4096;
@@ -212,13 +218,13 @@ impl Document {
             untitled_name,
             encoding,
             eol,
+            eol_counts: [0; 3],
             lang,
             read_only: false,
             version: 0,
             meta: vec![LineMeta::default()],
             marks: Vec::new(),
             mtime: None,
-            monitoring: false,
             tab_color: None,
             pinned: false,
             force_dirty: false,
@@ -236,6 +242,8 @@ impl Document {
             text_cache: RefCell::new(None),
             tab_width: 4,
             fold_gen: 0,
+            line_filter: None,
+            transient: false,
         }
     }
 
@@ -250,7 +258,21 @@ impl Document {
         let mut d = Self::new(id, name, langs, lang, eol, TextEncoding::Utf8);
         d.rope = Rope::from_str(text);
         d.meta = vec![LineMeta::default(); d.rope.len_lines()];
+        d.eol_counts = Eol::count(text);
         d
+    }
+
+    /// True when the document mixes different line endings.
+    pub fn has_mixed_eol(&self) -> bool {
+        self.eol_counts.iter().filter(|&&n| n > 0).count() > 1
+    }
+
+    /// Line-ending counts of the text around an edit, one char either side, so
+    /// CR LF pairs split or joined by the edit are counted correctly.
+    fn eol_counts_around(&self, pos: usize, len: usize) -> [usize; 3] {
+        let a = pos.saturating_sub(1);
+        let b = (pos + len + 1).min(self.rope.len_chars());
+        Eol::count(&self.rope.slice(a..b).to_string())
     }
 
     /// Loads a file from disk, detecting its encoding, EOL style and language.
@@ -508,6 +530,7 @@ impl Document {
         let lines_before = self.rope.len_lines();
         let start_line = self.rope.char_to_line(pos);
         let end_line_old = self.rope.char_to_line(pos + del);
+        let eol_before = self.eol_counts_around(pos, del);
         // A deletion that starts right after "\r" and inserts "\n" can merge lines;
         // the line-count delta below handles that uniformly.
         if del > 0 {
@@ -518,6 +541,10 @@ impl Document {
         }
         let lines_after = self.rope.len_lines();
         let delta = lines_after.cast_signed() - lines_before.cast_signed();
+        let eol_after = self.eol_counts_around(pos, new.chars().count());
+        for i in 0..3 {
+            self.eol_counts[i] = self.eol_counts[i] + eol_after[i] - eol_before[i];
+        }
         if delta > 0 {
             let at = (start_line + 1).min(self.meta.len());
             self.meta.splice(
@@ -885,6 +912,12 @@ impl Document {
         out
     }
 
+    /// Shows only `lines` (sorted line numbers), or every line with `None`.
+    pub fn set_line_filter(&mut self, lines: Option<Arc<Vec<usize>>>) {
+        self.line_filter = lines;
+        self.fold_gen += 1;
+    }
+
     pub fn has_folds(&self) -> bool {
         self.meta.iter().any(|m| m.folded)
     }
@@ -1040,6 +1073,31 @@ mod tests {
         d.set_highlighting(false);
         assert!(!d.lex_ahead(std::time::Duration::from_millis(1)));
         assert_eq!(d.lex.states.len(), 1);
+    }
+
+    #[test]
+    fn eol_counts_follow_edits() {
+        let mut d = doc("a\r\nb\nc");
+        assert_eq!(d.eol_counts, [1, 1, 0]);
+        assert!(d.has_mixed_eol());
+        let mut seed = 7u64;
+        let pieces = ["\r", "\n", "\r\n", "x", ""];
+        for _ in 0..500 {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            let r = usize::try_from(seed >> 33).unwrap();
+            let len = d.len_chars();
+            let pos = r % (len + 1);
+            let del = if r % 3 == 0 { (r / 7) % 3 } else { 0 }.min(len - pos);
+            let ins = pieces[(r / 11) % pieces.len()];
+            let sels = vec![Selection::caret(pos)];
+            d.edit(
+                vec![(pos, pos + del, ins.into())],
+                &sels,
+                EditKind::Other,
+                |_| sels.clone(),
+            );
+            assert_eq!(d.eol_counts, Eol::count(&d.rope.to_string()));
+        }
     }
 
     #[test]

@@ -2,17 +2,22 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod calltip;
 mod commands;
 mod compare;
 mod compare_ui;
 mod config;
+mod datatools;
 mod dialogs;
 mod document;
 mod editor;
 mod encoding;
+mod filter;
 mod formatters;
+mod formatters_web;
 mod function_list;
 mod icons;
+mod json_tree;
 mod langs;
 mod lexer;
 mod ops;
@@ -39,7 +44,18 @@ fn parse_args() -> (StartupArgs, bool, Vec<String>) {
         always_on_top: false,
     };
     let mut multi = false;
-    for arg in &raw {
+    let mut args = raw.iter();
+    while let Some(arg) = args.next() {
+        if let Some(dir) = arg.strip_prefix("--session-dir=") {
+            config::set_session_dir(dir.into());
+            continue;
+        }
+        if arg == "--session-dir" {
+            if let Some(dir) = args.next() {
+                config::set_session_dir(dir.into());
+            }
+            continue;
+        }
         match arg.as_str() {
             "-multiInst" => multi = true,
             "-nosession" => a.no_session = true,
@@ -47,7 +63,7 @@ fn parse_args() -> (StartupArgs, bool, Vec<String>) {
             "-alwaysOnTop" => a.always_on_top = true,
             "--help" | "-h" => {
                 println!(
-                    "{} [--help] [-multiInst] [-nosession] [-ro] [-alwaysOnTop] [-l<Language>] [-n<line>] [-c<column>] [filePath ...]",
+                    "{} [--help] [-multiInst] [-nosession] [--session-dir <folder>] [-ro] [-alwaysOnTop] [-l<Language>] [-n<line>] [-c<column>] [filePath ...]",
                     ui::APP_NAME
                 );
                 std::process::exit(0);
@@ -106,17 +122,6 @@ impl eframe::App for App {
         }
     }
 
-    fn save(&mut self, _storage: &mut dyn eframe::Storage) {
-        // Periodic backup of the session and unsaved content.
-        if !self.exit_requested {
-            self.save_all_state();
-        }
-    }
-
-    fn auto_save_interval(&self) -> std::time::Duration {
-        std::time::Duration::from_secs(7)
-    }
-
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         if !self.allow_close {
             self.save_all_state();
@@ -153,6 +158,8 @@ fn app_icon() -> egui::IconData {
 }
 
 fn main() -> eframe::Result<()> {
+    #[cfg(target_os = "macos")]
+    platform::finder::install();
     let (args, multi, raw) = parse_args();
     let settings = config::load_settings();
     if settings.single_instance && !multi && platform::forward_to_running_instance(&raw) {
@@ -165,12 +172,25 @@ fn main() -> eframe::Result<()> {
         .with_min_inner_size([420.0, 300.0])
         .with_drag_and_drop(true)
         .with_icon(app_icon());
+    // Restore the window where the session left it. Extra windows (opened
+    // without the session) start a little down and to the right of it.
+    if let Some(g) = config::load_session().window
+        && g.width >= 200.0
+        && g.height >= 150.0
+    {
+        let offset = if args.no_session { 30.0 } else { 0.0 };
+        viewport = viewport
+            .with_position([g.x + offset, g.y + offset])
+            .with_inner_size([g.width, g.height])
+            .with_maximized(g.maximized && !args.no_session);
+    }
     if always_on_top {
         viewport = viewport.with_always_on_top();
     }
     let options = eframe::NativeOptions {
         viewport,
-        persist_window: true,
+        // The session stores the window geometry itself (see above).
+        persist_window: false,
         ..Default::default()
     };
     eframe::run_native(
@@ -178,6 +198,11 @@ fn main() -> eframe::Result<()> {
         options,
         Box::new(move |cc| {
             setup_fonts(&cc.egui_ctx)?;
+            #[cfg(target_os = "macos")]
+            {
+                let ctx = cc.egui_ctx.clone();
+                platform::finder::set_wake(move || ctx.request_repaint());
+            }
             let mut app = App::new(args);
             if app.settings.single_instance && !multi {
                 let (tx, rx) = std::sync::mpsc::channel();

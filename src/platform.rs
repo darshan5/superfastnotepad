@@ -54,6 +54,34 @@ pub fn run_shell(cmdline: &str) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Starts another editor window as a separate process. Extra windows don't
+/// restore or save the session (only the first window owns it), so closing one
+/// with unsaved changes asks to save them.
+pub fn open_new_window(files: &[std::path::PathBuf]) -> std::io::Result<()> {
+    let exe = std::env::current_exe()?;
+    // Inside a macOS .app, launch through LaunchServices so the new window
+    // gets a proper Dock entry and the bundle's icon.
+    #[cfg(target_os = "macos")]
+    if let Some(bundle) = exe
+        .ancestors()
+        .find(|p| p.extension().is_some_and(|e| e == "app"))
+    {
+        Proc::new("open")
+            .arg("-n")
+            .arg(bundle)
+            .arg("--args")
+            .args(["-multiInst", "-nosession"])
+            .args(files)
+            .spawn()?;
+        return Ok(());
+    }
+    Proc::new(exe)
+        .args(["-multiInst", "-nosession"])
+        .args(files)
+        .spawn()?;
+    Ok(())
+}
+
 pub fn percent_encode(s: &str) -> String {
     let mut out = String::new();
     for b in s.bytes() {
@@ -69,7 +97,7 @@ pub fn percent_encode(s: &str) -> String {
 // ------------------------------------------------------------------ single instance
 
 fn lock_path() -> std::path::PathBuf {
-    crate::config::config_dir().join("instance.lock")
+    crate::config::session_dir().join("instance.lock")
 }
 
 /// Tries to hand `args` to an already running instance. Returns true on success.
@@ -145,4 +173,86 @@ pub fn start_instance_server(tx: Sender<Vec<String>>, wake: impl Fn() + Send + '
 
 pub fn release_instance_lock() {
     let _ = std::fs::remove_file(lock_path());
+}
+
+/// Files opened from Finder ("Open With", double-click, drop on the Dock
+/// icon). macOS sends these to the app delegate as `application:openURLs:`,
+/// which the window library's delegate doesn't implement; adding the method
+/// to `NSObject` makes every object, the delegate included, accept them.
+#[cfg(target_os = "macos")]
+pub mod finder {
+    use std::ffi::{CStr, c_char};
+    use std::sync::{Mutex, OnceLock};
+
+    use objc2::runtime::{AnyClass, AnyObject, Imp, Sel};
+    use objc2::{msg_send, sel};
+
+    static OPENED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    static WAKE: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
+
+    unsafe extern "C-unwind" fn open_urls(
+        _this: *mut AnyObject,
+        _cmd: Sel,
+        _app: *mut AnyObject,
+        urls: *mut AnyObject,
+    ) {
+        if urls.is_null() {
+            return;
+        }
+        // SAFETY: AppKit passes an NSArray<NSURL *>; each message below is
+        // a standard NSArray / NSURL / NSString method.
+        let paths: Vec<String> = unsafe {
+            let n: usize = msg_send![urls, count];
+            (0..n)
+                .filter_map(|i| {
+                    let url: *mut AnyObject = msg_send![urls, objectAtIndex: i];
+                    let path: *mut AnyObject = msg_send![url, path];
+                    if path.is_null() {
+                        return None;
+                    }
+                    let c: *const c_char = msg_send![path, UTF8String];
+                    (!c.is_null()).then(|| CStr::from_ptr(c).to_string_lossy().into_owned())
+                })
+                .collect()
+        };
+        if let Ok(mut q) = OPENED.lock() {
+            q.extend(paths);
+        }
+        if let Some(w) = WAKE.get() {
+            w();
+        }
+    }
+
+    /// Call once, before the event loop starts.
+    pub fn install() {
+        let Some(cls) = AnyClass::get(c"NSObject") else {
+            return;
+        };
+        let f: unsafe extern "C-unwind" fn(*mut AnyObject, Sel, *mut AnyObject, *mut AnyObject) =
+            open_urls;
+        // SAFETY: the function matches the `v@:@@` signature of
+        // `application:openURLs:`; NSObject doesn't define it already.
+        unsafe {
+            let imp: Imp = std::mem::transmute(f);
+            objc2::ffi::class_addMethod(
+                std::ptr::from_ref(cls).cast_mut(),
+                sel!(application:openURLs:),
+                imp,
+                c"v@:@@".as_ptr(),
+            );
+        }
+    }
+
+    /// How to wake the UI when files arrive.
+    pub fn set_wake(f: impl Fn() + Send + Sync + 'static) {
+        let _ = WAKE.set(Box::new(f));
+    }
+
+    /// Files opened from Finder since the last call.
+    pub fn take() -> Vec<String> {
+        OPENED
+            .lock()
+            .map(|mut q| std::mem::take(&mut *q))
+            .unwrap_or_default()
+    }
 }

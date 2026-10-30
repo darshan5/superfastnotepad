@@ -17,8 +17,6 @@ pub enum Icon {
     Redo,
     Find,
     Replace,
-    ZoomIn,
-    ZoomOut,
     SyncV,
     SyncH,
     Wrap,
@@ -29,7 +27,6 @@ pub enum Icon {
     DocList,
     FunctionList,
     Folder,
-    Monitor,
 }
 
 fn page(p: &Painter, r: Rect, fg: Color32, fill: Color32) {
@@ -265,15 +262,6 @@ pub fn draw(p: &Painter, rect: Rect, icon: Icon, fg: Color32) {
                 red,
             );
         }
-        Icon::ZoomIn | Icon::ZoomOut => {
-            let mc = c - vec2(w * 0.1, w * 0.1);
-            magnifier(p, mc, w * 0.3, fg);
-            let s = Stroke::new(1.6, fg);
-            p.line_segment([mc - vec2(w * 0.15, 0.0), mc + vec2(w * 0.15, 0.0)], s);
-            if icon == Icon::ZoomIn {
-                p.line_segment([mc - vec2(0.0, w * 0.15), mc + vec2(0.0, w * 0.15)], s);
-            }
-        }
         Icon::SyncV => {
             p.line_segment([pos2(c.x - 3.0, r.top()), pos2(c.x - 3.0, r.bottom())], st);
             p.line_segment([pos2(c.x + 3.0, r.top()), pos2(c.x + 3.0, r.bottom())], st);
@@ -388,16 +376,6 @@ pub fn draw(p: &Painter, rect: Rect, icon: Icon, fg: Color32) {
                 egui::FontId::proportional(w * 1.1),
                 fg,
             );
-        }
-        Icon::Monitor => {
-            let pts: Vec<Pos2> = (0..=20)
-                .map(|i| {
-                    let a = std::f32::consts::TAU * i as f32 / 20.0;
-                    c + vec2(a.cos() * w * 0.5, a.sin() * w * 0.28)
-                })
-                .collect();
-            p.add(Shape::line(pts, st));
-            p.circle_filled(c, w * 0.16, fg);
         }
     }
 }

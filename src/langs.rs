@@ -41,6 +41,8 @@ pub enum Family {
     Diff,
     /// Markdown-lite.
     Markdown,
+    /// Log files: levels, timestamps, numbers and quoted strings.
+    Log,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -124,10 +126,6 @@ impl Language {
     }
 }
 
-const LUA_OPEN: &[&str] = &["if", "do", "function", "repeat"];
-const LUA_CLOSE: &[&str] = &["end", "until"];
-const PASCAL_OPEN: &[&str] = &["begin", "case", "record", "try", "asm"];
-const PASCAL_CLOSE: &[&str] = &["end"];
 const BASH_OPEN: &[&str] = &["if", "do", "case", "{"];
 const BASH_CLOSE: &[&str] = &["fi", "done", "esac", "}"];
 
@@ -142,7 +140,7 @@ fn profile_for(name: &str) -> LexProfile {
             p.family = Family::Markup;
             p.fold = FoldMode::Markup;
         }
-        "ini" | "props" => {
+        "ini" => {
             p.family = Family::Ini;
             p.fold = FoldMode::None;
         }
@@ -154,26 +152,16 @@ fn profile_for(name: &str) -> LexProfile {
             p.family = Family::Markdown;
             p.fold = FoldMode::None;
         }
-        "c" | "cpp" | "objc" | "cs" => p.preprocessor = Some('#'),
-        "python" | "nim" => {
+        "log" => {
+            p.family = Family::Log;
+            p.fold = FoldMode::None;
+        }
+        "c" | "cpp" | "cs" => p.preprocessor = Some('#'),
+        "python" => {
             p.triple_quotes = true;
             p.fold = FoldMode::Indent;
         }
-        "yaml" | "haskell" | "makefile" | "cmake" | "fortran" | "ruby" | "elixir" | "julia"
-        | "vb" | "batch" | "latex" | "erlang" | "clojure" | "asm" | "toml" | "sql"
-        | "dockerfile" => p.fold = FoldMode::Indent,
-        "lua" => {
-            p.fold = FoldMode::Keywords;
-            p.fold_open = LUA_OPEN;
-            p.fold_close = LUA_CLOSE;
-        }
-        "pascal" => {
-            p.fold = FoldMode::Keywords;
-            p.fold_open = PASCAL_OPEN;
-            p.fold_close = PASCAL_CLOSE;
-            p.escapes = false;
-            p.string_delims = "'";
-        }
+        "vb" | "batch" | "sql" | "dockerfile" => p.fold = FoldMode::Indent,
         "bash" => {
             p.fold = FoldMode::Keywords;
             p.fold_open = BASH_OPEN;
@@ -184,25 +172,21 @@ fn profile_for(name: &str) -> LexProfile {
         _ => {}
     }
     match name {
-        "perl" | "php" | "powershell" | "makefile" | "dockerfile" => p.dollar_vars = true,
-        "javascript" | "typescript" | "go" | "kotlin" | "sql" | "groovy" => {
+        "perl" | "php" | "powershell" | "dockerfile" => p.dollar_vars = true,
+        "javascript" | "typescript" | "go" | "kotlin" | "sql" => {
             p.string_delims = "\"'`";
         }
-        "vb" | "asm" | "batch" | "fortran" => {
+        "vb" | "batch" => {
             p.escapes = false;
             p.string_delims = "\"";
         }
         "css" => p.ident_extra = "-",
-        "clojure" => p.ident_extra = "-!?*<>=/+",
         _ => {}
     }
     if name == "powershell" {
         p.ident_extra = "-";
     }
-    if matches!(
-        name,
-        "sql" | "vb" | "batch" | "pascal" | "fortran" | "asm" | "powershell" | "html" | "ini"
-    ) {
+    if matches!(name, "sql" | "vb" | "batch" | "powershell" | "html" | "ini") {
         p.case_insensitive = true;
     }
     p
@@ -295,11 +279,9 @@ impl LangRegistry {
     pub fn detect(&self, file_name: &str, first_line: &str) -> usize {
         let lower = file_name.to_lowercase();
         let special = match lower.as_str() {
-            "makefile" | "gnumakefile" => Some("makefile"),
-            "cmakelists.txt" => Some("cmake"),
             ".bashrc" | ".bash_profile" | ".profile" | ".zshrc" => Some("bash"),
             "dockerfile" | "containerfile" => Some("dockerfile"),
-            "cargo.lock" => Some("toml"),
+            "cargo.lock" => Some("ini"),
             _ => None,
         };
         if let Some(idx) = special.and_then(|n| self.by_name(n)) {
@@ -321,12 +303,8 @@ impl LangRegistry {
                 Some("python")
             } else if fl.contains("perl") {
                 Some("perl")
-            } else if fl.contains("ruby") {
-                Some("ruby")
             } else if fl.contains("node") {
                 Some("javascript")
-            } else if fl.contains("lua") {
-                Some("lua")
             } else if fl.contains("php") {
                 Some("php")
             } else {
@@ -357,7 +335,7 @@ mod tests {
     #[test]
     fn loads_core_languages() {
         let reg = LangRegistry::load();
-        assert!(reg.langs.len() >= 40, "got {}", reg.langs.len());
+        assert_eq!(reg.langs.len(), 28);
         let cpp = &reg.langs[reg.by_name("cpp").unwrap()];
         assert_eq!(cpp.comment_line.as_deref(), Some("//"));
         assert!(
@@ -376,7 +354,8 @@ mod tests {
             reg.langs[reg.detect("run", "#!/usr/bin/env python3")].name,
             "python"
         );
-        assert_eq!(reg.langs[reg.detect("Makefile", "")].name, "makefile");
+        assert_eq!(reg.langs[reg.detect("Dockerfile", "")].name, "dockerfile");
+        assert_eq!(reg.langs[reg.detect("Cargo.toml", "")].name, "ini");
         assert_eq!(reg.langs[reg.detect("notes.unknown", "")].name, "normal");
     }
 }

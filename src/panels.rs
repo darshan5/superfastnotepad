@@ -11,6 +11,34 @@ use crate::app::App;
 use crate::commands::Command;
 use crate::document::{EditKind, Selection};
 use crate::function_list::FoundItem;
+use crate::json_tree::Node as JsonNode;
+
+type DocId = u64;
+
+/// A JSON tree parse: the nodes, or why the text isn't JSON.
+type JsonParse = Result<Arc<Vec<JsonNode>>, String>;
+/// A background parse: (document, version, result).
+type JsonJob = (
+    DocId,
+    u64,
+    std::sync::mpsc::Receiver<Result<Vec<JsonNode>, String>>,
+);
+
+/// State of the JSON tree panel.
+#[derive(Default)]
+pub struct JsonTreeState {
+    /// Last parse: (document, version, nodes or error).
+    pub result: Option<(DocId, u64, JsonParse)>,
+    /// Parse running in the background.
+    pub job: Option<JsonJob>,
+    /// Document version last seen, and when it changed.
+    pub seen: (DocId, u64, f64),
+    pub collapsed: std::collections::HashSet<u32>,
+    /// Visible rows for the current collapse state.
+    pub rows: Option<Vec<u32>>,
+    /// Byte range of a value to copy from the document.
+    pub copy_value: Option<(usize, usize)>,
+}
 
 const ASCII_NAMES: [&str; 33] = [
     "NUL", "SOH", "STX", "ETX", "EOT", "ENQ", "ACK", "BEL", "BS", "TAB", "LF", "VT", "FF", "CR",
@@ -124,6 +152,158 @@ impl App {
         if close {
             self.results_visible = false;
         }
+    }
+
+    /// Starts, collects and applies background line-filter runs. A query or
+    /// document change waits 150 ms (typing) before re-filtering.
+    pub fn update_line_filter(&mut self, now: f64) {
+        use crate::filter::filter_lines;
+        let Some(id) = self.active_id() else { return };
+        // The filter follows the active tab; other tabs show every line.
+        for (did, d) in &mut self.docs {
+            if *did != id && d.line_filter.is_some() {
+                d.set_line_filter(None);
+            }
+        }
+        let f = &mut self.filter;
+        if let Some((jid, jv, jq, rx)) = &f.job
+            && let Ok(res) = rx.try_recv()
+        {
+            let (jid, jv, jq) = (*jid, *jv, jq.clone());
+            f.job = None;
+            match res {
+                Ok(r) => {
+                    f.error = None;
+                    if let Some(d) = self.docs.get_mut(&jid) {
+                        d.set_line_filter(Some(Arc::clone(&r.lines)));
+                    }
+                    f.last = Some(r);
+                }
+                Err(e) => f.error = Some(e),
+            }
+            f.applied = Some((jid, jv, jq));
+        }
+        let f = &mut self.filter;
+        let Some(doc) = self.docs.get_mut(&id) else {
+            return;
+        };
+        let active = f.open && !f.query.text.is_empty();
+        if !active {
+            if doc.line_filter.is_some() {
+                doc.set_line_filter(None);
+            }
+            f.applied = None;
+            f.last = None;
+            f.error = None;
+            return;
+        }
+        let want = (id, doc.version, f.query.clone());
+        if f.applied.as_ref() == Some(&want) || f.job.is_some() {
+            return;
+        }
+        if f.applied
+            .as_ref()
+            .is_none_or(|(i, v, q)| (*i, *v, q) != (id, doc.version, &f.query))
+            && now - f.changed_at < 0.15
+        {
+            if let Some(c) = &self.egui_ctx {
+                c.request_repaint_after(std::time::Duration::from_millis(150));
+            }
+            return;
+        }
+        let text = doc.text();
+        let q = f.query.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let ctx = self.egui_ctx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(filter_lines(&text, &q));
+            if let Some(c) = ctx {
+                c.request_repaint();
+            }
+        });
+        f.job = Some((id, doc.version, f.query.clone(), rx));
+    }
+
+    pub fn filter_bar(&mut self, ui: &mut Ui) {
+        let now = ui.input(|i| i.time);
+        let mut close = false;
+        let mut export = false;
+        ui.horizontal(|ui| {
+            if ui
+                .small_button("x")
+                .on_hover_text("Close and show all lines")
+                .clicked()
+            {
+                close = true;
+            }
+            ui.label("Filter lines:");
+            let f = &mut self.filter;
+            let before = f.query.clone();
+            let mut te = egui::TextEdit::singleline(&mut f.query.text)
+                .desired_width(280.0)
+                .hint_text(if f.query.regex {
+                    "regular expression"
+                } else {
+                    "text"
+                });
+            if f.error.is_some() {
+                te = te
+                    .background_color(Color32::from_rgb(0xFF, 0x90, 0x90))
+                    .text_color(Color32::BLACK);
+            }
+            let r = ui.add(te);
+            if std::mem::take(&mut f.focus) {
+                r.request_focus();
+            }
+            if r.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                close = true;
+            }
+            ui.checkbox(&mut f.query.regex, "Regex");
+            ui.checkbox(&mut f.query.match_case, "Match case");
+            ui.checkbox(&mut f.query.exclude, "Hide matching lines");
+            if f.query != before {
+                f.changed_at = now;
+            }
+            if let Some(e) = &f.error {
+                ui.label(RichText::new(e).color(Color32::RED));
+            } else if f.job.is_some() {
+                ui.label(RichText::new("Filtering...").weak());
+            } else if let Some(r) = &f.last {
+                ui.label(format!("{} of {} lines", r.lines.len(), r.total));
+                if ui.button("Export to New Tab").clicked() {
+                    export = true;
+                }
+            }
+        });
+        if close {
+            self.filter.open = false;
+            self.filter.query.text.clear();
+            self.request_focus_editor = true;
+        }
+        if export {
+            self.export_filtered_lines();
+        }
+    }
+
+    /// Copies the lines the filter shows into a new tab.
+    pub fn export_filtered_lines(&mut self) {
+        let Some(id) = self.active_id() else { return };
+        let Some(doc) = self.docs.get(&id) else {
+            return;
+        };
+        let Some(lines) = doc.line_filter.clone() else {
+            self.flash("No line filter is active");
+            return;
+        };
+        let eol = doc.eol.as_str();
+        let mut out = String::new();
+        for &l in lines.iter().filter(|&&l| l < doc.line_count()) {
+            out.push_str(&doc.line_text(l));
+            out.push_str(eol);
+        }
+        let pane = self.focused;
+        self.new_document(pane);
+        self.with_active(|d, v, _| crate::ops::insert_text(d, v, &out, EditKind::Other));
     }
 
     pub fn incremental_bar(&mut self, ui: &mut Ui) {
@@ -346,6 +526,7 @@ impl App {
     pub fn right_panels(&mut self, ui: &mut Ui, _out: &mut [Command]) {
         let sections = [
             self.settings.show_function_list,
+            self.settings.show_json_tree,
             self.settings.show_doc_map,
             self.settings.show_char_panel,
             self.settings.show_clipboard_history,
@@ -354,6 +535,10 @@ impl App {
         let each = (ui.available_height() / count as f32) - 30.0;
         if self.settings.show_function_list {
             self.function_list_panel(ui, each);
+            ui.separator();
+        }
+        if self.settings.show_json_tree {
+            self.json_tree_panel(ui, each);
             ui.separator();
         }
         if self.settings.show_doc_map {
@@ -626,6 +811,195 @@ impl App {
         }
     }
 
+    fn json_tree_panel(&mut self, ui: &mut Ui, height: f32) {
+        use crate::json_tree::{self as jt, Kind};
+        ui.horizontal(|ui| {
+            ui.strong("JSON Tree");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.small_button("x").clicked() {
+                    self.run(Command::ToggleJsonTree);
+                }
+                if ui.small_button("−").on_hover_text("Collapse all").clicked()
+                    && let Some((_, _, Ok(n))) = &self.json_tree.result
+                {
+                    self.json_tree.collapsed = jt::collapse_below(n, 1);
+                    self.json_tree.rows = None;
+                }
+                if ui.small_button("+").on_hover_text("Expand all").clicked() {
+                    self.json_tree.collapsed.clear();
+                    self.json_tree.rows = None;
+                }
+            });
+        });
+        let Some(id) = self.active_id() else { return };
+        let Some(doc) = self.docs.get(&id) else {
+            return;
+        };
+        let t = &mut self.json_tree;
+        // Collect a finished parse.
+        if let Some((jid, jv, rx)) = &t.job
+            && let Ok(res) = rx.try_recv()
+        {
+            let same_doc = matches!(&t.result, Some((cid, _, _)) if cid == jid);
+            if let (false, Ok(n)) = (same_doc, &res) {
+                t.collapsed = jt::collapse_below(n, 2);
+            }
+            t.result = Some((*jid, *jv, res.map(Arc::new)));
+            t.rows = None;
+            t.job = None;
+        }
+        // Re-parse once typing pauses, on a background thread.
+        let up_to_date = matches!(&t.result, Some((cid, v, _)) if *cid == id && *v == doc.version);
+        let now = ui.input(|i| i.time);
+        if (t.seen.0, t.seen.1) != (id, doc.version) {
+            t.seen = (id, doc.version, now);
+        }
+        let has_old = matches!(&t.result, Some((cid, _, _)) if *cid == id);
+        let settled = !has_old || now - t.seen.2 >= 0.3;
+        if !up_to_date && t.job.is_none() {
+            if settled {
+                let text = doc.text();
+                let (tx, rx) = std::sync::mpsc::channel();
+                let ctx = self.egui_ctx.clone();
+                std::thread::spawn(move || {
+                    let _ = tx.send(jt::parse(&text));
+                    if let Some(c) = ctx {
+                        c.request_repaint();
+                    }
+                });
+                t.job = Some((id, doc.version, rx));
+            } else {
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_millis(300));
+            }
+        }
+        let nodes = match &t.result {
+            Some((cid, _, Ok(n))) if *cid == id => Arc::clone(n),
+            Some((cid, _, Err(e))) if *cid == id => {
+                ui.label(RichText::new(format!("Not valid JSON: {e}")).weak());
+                return;
+            }
+            _ => {
+                ui.label(RichText::new("Reading...").weak());
+                return;
+            }
+        };
+        if t.rows.is_none() {
+            t.rows = Some(jt::visible_rows(&nodes, &t.collapsed));
+        }
+        let rows = t.rows.clone().unwrap_or_default();
+        let row_h = ui.text_style_height(&egui::TextStyle::Monospace) + 4.0;
+        let font = egui::FontId::monospace(12.0);
+        let fg = ui.visuals().text_color();
+        let weak = ui.visuals().weak_text_color();
+        let (key_col, str_col, num_col) = (
+            Color32::from_rgb(0x4a, 0x7a, 0xc8),
+            Color32::from_rgb(0x2e, 0x8b, 0x57),
+            Color32::from_rgb(0xc0, 0x6a, 0x20),
+        );
+        let mut jump = None;
+        let mut toggle = None;
+        let mut copy = None;
+        egui::ScrollArea::both()
+            .id_salt("jsontree")
+            .max_height(height)
+            .auto_shrink([false, true])
+            .show_rows(ui, row_h, rows.len(), |ui, range| {
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                for &r in &rows[range] {
+                    let n = &nodes[r as usize];
+                    let mut job = LayoutJob::default();
+                    let fmt = |c| egui::TextFormat::simple(font.clone(), c);
+                    let indent = "  ".repeat(usize::from(n.depth));
+                    let marker = if n.children == 0 {
+                        "  "
+                    } else if self.json_tree.collapsed.contains(&r) {
+                        "+ "
+                    } else {
+                        "- "
+                    };
+                    job.append(&format!("{indent}{marker}"), 0.0, fmt(weak));
+                    match &n.key {
+                        jt::Key::Root => {}
+                        jt::Key::Name(k) => {
+                            job.append(k, 0.0, fmt(key_col));
+                            job.append(": ", 0.0, fmt(weak));
+                        }
+                        jt::Key::Index(i) => job.append(&format!("{i}: "), 0.0, fmt(weak)),
+                    }
+                    let vc = match n.kind {
+                        Kind::String => str_col,
+                        Kind::Number | Kind::Bool | Kind::Null => num_col,
+                        Kind::Object | Kind::Array => weak,
+                    };
+                    job.append(
+                        &n.preview,
+                        0.0,
+                        fmt(if n.kind == Kind::String { vc } else { fg }.gamma_multiply(1.0)),
+                    );
+                    let resp = ui.add(egui::Button::new(job).frame(false).sense(Sense::click()));
+                    if resp.clicked() {
+                        if n.children > 0
+                            && resp.interact_pointer_pos().is_some_and(|p| {
+                                p.x < resp.rect.left() + 7.5 * (f32::from(n.depth) * 2.0 + 2.0)
+                            })
+                        {
+                            toggle = Some(r);
+                        } else {
+                            jump = Some(n.offset);
+                        }
+                    }
+                    if resp.double_clicked() && n.children > 0 {
+                        toggle = Some(r);
+                    }
+                    resp.context_menu(|ui| {
+                        if ui.button("Copy JSON Pointer").clicked() {
+                            copy = Some(jt::pointer(&nodes, r as usize));
+                            ui.close();
+                        }
+                        if let jt::Key::Name(k) = &n.key
+                            && ui.button("Copy Key").clicked()
+                        {
+                            copy = Some(k.clone());
+                            ui.close();
+                        }
+                        if ui.button("Copy Value").clicked() {
+                            self.json_tree.copy_value = Some((n.offset, n.value_end));
+                            ui.close();
+                        }
+                    });
+                }
+            });
+        let t = &mut self.json_tree;
+        if let Some(r) = toggle {
+            if !t.collapsed.remove(&r) {
+                t.collapsed.insert(r);
+            }
+            t.rows = None;
+        }
+        if let Some(c) = copy {
+            ui.ctx().copy_text(c);
+        }
+        if let Some((a, b)) = t.copy_value.take()
+            && let Some(d) = self.docs.get(&id)
+        {
+            let text = d.text();
+            if let Some(v) = text.get(a..b) {
+                ui.ctx().copy_text(v.to_string());
+            }
+        }
+        if let Some(off) = jump {
+            self.with_active(|d, v, _| {
+                let p = d.byte_to_char(off);
+                let l = d.char_to_line(p);
+                d.ensure_line_visible(l);
+                v.set_single(p);
+                v.center_caret = true;
+            });
+            self.request_focus_editor = true;
+        }
+    }
+
     fn doc_map_panel(&mut self, ui: &mut Ui, height: f32) {
         ui.horizontal(|ui| {
             ui.strong("Document Map");
@@ -663,6 +1037,26 @@ impl App {
             top.saturating_sub(max_lines / 3).min(n - max_lines)
         };
         let cw = 1.2f32;
+        // Compare differences as a coloured strip down the right edge.
+        if let Some(d) = vs.compare.clone() {
+            for i in 0..max_lines.min(n - first) {
+                if let Some(c) = d
+                    .kinds
+                    .get(first + i)
+                    .and_then(|&k| crate::editor::compare_marker_color(k, g.is_dark))
+                {
+                    let y = rect.min.y + i as f32 * lh;
+                    p.rect_filled(
+                        egui::Rect::from_min_max(
+                            egui::pos2(rect.max.x - 5.0, y),
+                            egui::pos2(rect.max.x, y + lh),
+                        ),
+                        CornerRadius::ZERO,
+                        c,
+                    );
+                }
+            }
+        }
         for i in 0..max_lines.min(n - first) {
             let l = first + i;
             let text = doc.line_text(l);

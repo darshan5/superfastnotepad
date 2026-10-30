@@ -22,6 +22,13 @@ pub struct CompareOptions {
     pub word_diff: bool,
     /// Re-compare automatically after edits.
     pub auto: bool,
+    /// Mark lines that were only moved (removed in one place, added
+    /// unchanged in another) separately.
+    pub detect_moves: bool,
+    /// Hide the side panels while comparing, and show them again afterwards.
+    pub hide_panels: bool,
+    /// Text matching this regex is ignored when comparing lines.
+    pub ignore_pattern: Option<String>,
 }
 
 impl Default for CompareOptions {
@@ -32,6 +39,9 @@ impl Default for CompareOptions {
             ignore_empty_lines: false,
             word_diff: true,
             auto: true,
+            detect_moves: true,
+            hide_panels: true,
+            ignore_pattern: None,
         }
     }
 }
@@ -45,6 +55,8 @@ pub enum LineKind {
     Added,
     /// Present on both sides, but different.
     Changed,
+    /// Removed here and added unchanged elsewhere (or the reverse).
+    Moved,
 }
 
 /// One difference, in line numbers of each document. An empty range means
@@ -86,6 +98,7 @@ pub struct CompareResult {
     pub added: usize,
     pub removed: usize,
     pub changed: usize,
+    pub moved: usize,
 }
 
 /// Inputs larger than this are refused (diffing would freeze the UI).
@@ -95,11 +108,15 @@ const MAX_INLINE_LINE: usize = 32 * 1024;
 
 static GENERATION: AtomicU64 = AtomicU64::new(1);
 
-fn normalize(line: &str, o: &CompareOptions) -> String {
+fn normalize(line: &str, o: &CompareOptions, ignore: Option<&regex::Regex>) -> String {
+    let line = match ignore {
+        Some(re) => re.replace_all(line, ""),
+        None => std::borrow::Cow::Borrowed(line),
+    };
     let s: String = if o.ignore_whitespace {
         line.chars().filter(|c| !c.is_whitespace()).collect()
     } else {
-        line.to_string()
+        line.into_owned()
     };
     if o.ignore_case { s.to_lowercase() } else { s }
 }
@@ -161,7 +178,12 @@ fn push_merged(v: &mut Vec<(usize, usize)>, s: usize, e: usize) {
     v.push((s, e));
 }
 
-fn runs_of(kinds: &[LineKind]) -> Vec<(usize, usize, LineKind)> {
+/// A new decoration generation (layout cache key).
+pub fn next_generation() -> u64 {
+    GENERATION.fetch_add(1, Ordering::Relaxed)
+}
+
+pub fn runs_of(kinds: &[LineKind]) -> Vec<(usize, usize, LineKind)> {
     let mut out: Vec<(usize, usize, LineKind)> = Vec::new();
     for (i, &k) in kinds.iter().enumerate() {
         if k == LineKind::Same {
@@ -195,8 +217,21 @@ pub fn compare(
             MAX_BYTES / 1_000_000
         ));
     }
-    let norm_l: Vec<String> = left.iter().map(|l| normalize(l, o)).collect();
-    let norm_r: Vec<String> = right.iter().map(|l| normalize(l, o)).collect();
+    let ignore = match o.ignore_pattern.as_deref().filter(|p| !p.is_empty()) {
+        Some(p) => Some(
+            regex::Regex::new(p)
+                .map_err(|e| format!("The ignore pattern isn't a valid regex: {e}"))?,
+        ),
+        None => None,
+    };
+    let norm_l: Vec<String> = left
+        .iter()
+        .map(|l| normalize(l, o, ignore.as_ref()))
+        .collect();
+    let norm_r: Vec<String> = right
+        .iter()
+        .map(|l| normalize(l, o, ignore.as_ref()))
+        .collect();
     // Indices of the lines that take part in the diff.
     let keep = |norm: &[String]| -> Vec<usize> {
         (0..norm.len())
@@ -333,6 +368,27 @@ pub fn compare(
         cur_l = l_rng.end;
         cur_r = r_rng.end;
     }
+    let mut moved = 0;
+    if o.detect_moves {
+        // Pair each removed line with an identical added line elsewhere.
+        let mut removed_at: HashMap<&str, Vec<usize>> = HashMap::new();
+        for (i, k) in kinds_l.iter().enumerate().rev() {
+            if *k == LineKind::Removed && !norm_l[i].trim().is_empty() {
+                removed_at.entry(norm_l[i].as_str()).or_default().push(i);
+            }
+        }
+        for (j, k) in kinds_r.iter_mut().enumerate() {
+            if *k == LineKind::Added
+                && let Some(i) = removed_at.get_mut(norm_r[j].as_str()).and_then(Vec::pop)
+            {
+                *k = LineKind::Moved;
+                kinds_l[i] = LineKind::Moved;
+                moved += 1;
+            }
+        }
+        added -= moved;
+        removed -= moved;
+    }
     let generation = GENERATION.fetch_add(1, Ordering::Relaxed);
     Ok(CompareResult {
         hunks,
@@ -355,13 +411,14 @@ pub fn compare(
         added,
         removed,
         changed,
+        moved,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use LineKind::{Added, Changed, Removed, Same};
+    use LineKind::{Added, Changed, Moved, Removed, Same};
 
     fn lines(s: &str) -> Vec<String> {
         s.split('\n').map(str::to_string).collect()
@@ -442,5 +499,34 @@ mod tests {
         assert_eq!(r.right.kinds, vec![Added, Same, Added]);
         assert_eq!(r.left.runs.len(), 0);
         assert_eq!(r.right.runs, vec![(0, 1, Added), (2, 3, Added)]);
+    }
+
+    #[test]
+    fn moved_lines_and_ignore_pattern() {
+        let a = lines("fn a() {}\nfn b() {}\nfn c() {}");
+        let b = lines("fn b() {}\nfn c() {}\nfn a() {}");
+        let r = compare(&a, &b, 1, 1, &CompareOptions::default()).unwrap();
+        assert_eq!(r.left.kinds, vec![Moved, Same, Same]);
+        assert_eq!(r.right.kinds, vec![Same, Same, Moved]);
+        assert_eq!((r.added, r.removed, r.moved), (0, 0, 1));
+        let off = CompareOptions {
+            detect_moves: false,
+            ..Default::default()
+        };
+        let r = compare(&a, &b, 1, 1, &off).unwrap();
+        assert_eq!((r.added, r.removed, r.moved), (1, 1, 0));
+        // Timestamps differ, but they're ignored.
+        let a = lines("10:00:01 start\n10:00:02 stop");
+        let b = lines("11:30:00 start\n11:30:09 stop");
+        let ts = CompareOptions {
+            ignore_pattern: Some(r"^\d\d:\d\d:\d\d".into()),
+            ..Default::default()
+        };
+        assert!(compare(&a, &b, 1, 1, &ts).unwrap().hunks.is_empty());
+        let bad = CompareOptions {
+            ignore_pattern: Some("(".into()),
+            ..Default::default()
+        };
+        assert!(compare(&a, &b, 1, 1, &bad).is_err());
     }
 }

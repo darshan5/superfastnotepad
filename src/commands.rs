@@ -27,6 +27,15 @@ pub enum MimeOp {
     QpDecode,
 }
 
+/// Tools > Data conversions (selection, or the whole document).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DataOp {
+    CsvToJson,
+    JsonToCsv,
+    CsvToTsv,
+    TsvToCsv,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FormatOp {
     /// Pick JSON or XML from the document's language / content.
@@ -37,6 +46,11 @@ pub enum FormatOp {
     XmlPretty,
     XmlMinify,
     XmlValidate,
+    CssPretty,
+    CssMinify,
+    HtmlPretty,
+    JsPretty,
+    MarkdownPretty,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,6 +67,18 @@ pub enum TabSort {
 pub enum Command {
     // File
     New,
+    /// Opens another, independent editor window.
+    NewWindow,
+    /// Sets the editor font size (points).
+    SetFontSize(u8),
+    FontBigger,
+    FontSmaller,
+    /// Opens the date and Unix time converter.
+    DateTimeTool,
+    Data(DataOp),
+    InsertUuid,
+    /// Moves the current (saved) document into a new window.
+    MoveToNewWindow,
     Open,
     OpenFolderAsWorkspace,
     Reload,
@@ -197,9 +223,6 @@ pub enum Command {
     ShowAllChars,
     ShowIndentGuides,
     ShowWrapSymbol,
-    ZoomIn,
-    ZoomOut,
-    ZoomRestore,
     MoveToOtherView,
     CloneToOtherView,
     GoToTab(usize),
@@ -220,10 +243,12 @@ pub enum Command {
     ToggleDocMap,
     ToggleDocList,
     ToggleFunctionList,
+    ToggleJsonTree,
+    FilterLines,
+    ExportFilteredLines,
     ToggleFolderTree,
     SyncScrollV,
     SyncScrollH,
-    Monitoring,
     ViewInBrowser,
     ToggleToolbar,
     ToggleStatusbar,
@@ -252,6 +277,14 @@ pub enum Command {
     CompareCopyToRight,
     CompareCopyToLeft,
     /// 0 = ignore whitespace, 1 = ignore case, 2 = ignore empty lines, 3 = word diff, 4 = auto re-compare.
+    CompareSelections,
+    CompareBlank,
+    CompareSwap,
+    CompareInline,
+    /// Copy every difference: true = left to right.
+    CompareCopyAll(bool),
+    CompareIgnoreFindText,
+    CompareClearIgnore,
     CompareOption(u8),
     Format(FormatOp),
     // Run
@@ -329,6 +362,11 @@ pub fn default_shortcuts() -> Vec<(Command, Shortcut)> {
     let s = Shortcut::new;
     let mut v = vec![
         (K::New, s(C, N, N, Key::N)),
+        (K::NewWindow, s(C, N, C, Key::N)),
+        (K::FilterLines, s(C, C, N, Key::L)),
+        (K::FontBigger, s(C, N, N, Key::Plus)),
+        (K::FontBigger, s(C, N, N, Key::Equals)),
+        (K::FontSmaller, s(C, N, N, Key::Minus)),
         (K::Open, s(C, N, N, Key::O)),
         (K::Reload, s(C, N, N, Key::R)),
         (K::Save, s(C, N, N, Key::S)),
@@ -387,11 +425,6 @@ pub fn default_shortcuts() -> Vec<(Command, Shortcut)> {
         (K::PrevBookmark, s(N, N, C, Key::F2)),
         (K::FullScreen, s(N, N, N, Key::F11)),
         (K::PostIt, s(N, N, N, Key::F12)),
-        (K::ZoomIn, s(C, N, N, Key::Plus)),
-        (K::ZoomIn, s(C, N, N, Key::Equals)),
-        (K::ZoomOut, s(C, N, N, Key::Minus)),
-        (K::ZoomRestore, s(C, N, N, Key::Slash)),
-        (K::ZoomRestore, s(C, N, N, Key::Num0)),
         (K::NextTab, s(C, N, N, Key::PageDown)),
         (K::PrevTab, s(C, N, N, Key::PageUp)),
         (K::NextTab, s(C, N, N, Key::Tab)),
@@ -403,7 +436,6 @@ pub fn default_shortcuts() -> Vec<(Command, Shortcut)> {
         (K::UnfoldAll, s(N, C, C, Key::Num0)),
         (K::FoldCurrent, s(C, C, N, Key::F)),
         (K::UnfoldCurrent, s(C, C, C, Key::F)),
-        (K::RunDialog, s(N, N, N, Key::F5)),
         (K::Compare, s(C, C, N, Key::C)),
         (K::CompareClear, s(C, C, N, Key::X)),
         (K::CompareNext, s(C, C, N, Key::N)),

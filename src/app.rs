@@ -115,6 +115,32 @@ pub enum Prompt {
     Message { title: String, text: String },
 }
 
+/// Documents larger than this (chars) are backed up at most every
+/// `BIG_BACKUP_INTERVAL` while editing.
+const BIG_BACKUP_CHARS: usize = 4 * 1024 * 1024;
+const BIG_BACKUP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Writes `rope` to `path` chunk by chunk (no full-text copy) through a
+/// temporary file, so a crash mid-write never leaves a half-written backup.
+fn write_backup_file(path: &Path, rope: &ropey::Rope) -> std::io::Result<()> {
+    use std::io::Write;
+    let tmp = path.with_extension("tmp");
+    {
+        let mut w = std::io::BufWriter::new(std::fs::File::create(&tmp)?);
+        for chunk in rope.chunks() {
+            w.write_all(chunk.as_bytes())?;
+        }
+        w.flush()?;
+    }
+    std::fs::rename(&tmp, path)
+}
+
+/// Font sizes the editor allows (points).
+pub const MIN_FONT_SIZE: u8 = 6;
+pub const MAX_FONT_SIZE: u8 = 48;
+/// Default editor font size (points).
+pub const DEFAULT_FONT_SIZE: u8 = 13;
+
 #[derive(Default)]
 pub struct Dialogs {
     pub goto: Option<(bool, String)>,
@@ -133,6 +159,7 @@ pub struct Dialogs {
     pub command_line: bool,
     pub debug_info: bool,
     pub pref_tab: usize,
+    pub datetime: Option<crate::dialogs::DateTimeDialog>,
 }
 
 pub struct App {
@@ -140,6 +167,15 @@ pub struct App {
     pub profile: Option<FrameProfile>,
     /// Last title sent to the window.
     pub window_title: String,
+    /// The OS is in dark mode (as last reported).
+    pub system_dark: bool,
+    /// Last normal (not maximized or full screen) window geometry.
+    pub window_geometry: Option<config::WindowGeometry>,
+    /// Unsaved-content backups on disk: document version, when, and where.
+    pub backups_written: HashMap<DocId, (u64, std::time::Instant, PathBuf)>,
+    /// When the last periodic backup ran, and a fingerprint of what it saved.
+    pub last_autosave: f64,
+    pub autosave_sig: u64,
     pub langs: LangRegistry,
     pub themes: ThemeRegistry,
     pub theme_idx: usize,
@@ -172,10 +208,14 @@ pub struct App {
     pub func_job: Option<(DocId, u64, std::sync::mpsc::Receiver<Vec<FoundItem>>)>,
     /// Document version the Function List last saw, and when it changed.
     pub func_seen: (DocId, u64, f64),
+    /// JSON tree panel (parsed only while the panel is open).
+    pub json_tree: crate::panels::JsonTreeState,
     /// Classes collapsed in the Function List.
     pub func_collapsed: HashSet<String>,
     pub func_filter: String,
     pub incremental: IncrementalState,
+    /// Line filter bar (View > Filter Lines).
+    pub filter: crate::filter::FilterState,
     pub status_msg: Option<(String, f64)>,
     pub always_on_top: bool,
     pub fullscreen: bool,
@@ -187,6 +227,8 @@ pub struct App {
     pub allow_close: bool,
     pub tree_expanded: HashSet<PathBuf>,
     pub pending_goto: Option<(DocId, usize, usize)>,
+    /// Contents of the toolbar's "Go to line" box.
+    pub goto_line_text: String,
     pub egui_ctx: Option<egui::Context>,
     pub request_focus_editor: bool,
     pub tab_drag: Option<(usize, usize)>,
@@ -250,6 +292,11 @@ impl App {
         let mut app = Self {
             profile: std::env::var_os("SUPERFASTNOTEPAD_PROFILE").map(|_| FrameProfile::default()),
             window_title: String::new(),
+            system_dark: false,
+            window_geometry: None,
+            backups_written: HashMap::new(),
+            last_autosave: 0.0,
+            autosave_sig: 0,
             langs,
             themes,
             theme_idx,
@@ -280,6 +327,8 @@ impl App {
             func_job: None,
             func_seen: (0, 0, 0.0),
             func_collapsed: HashSet::new(),
+            json_tree: crate::panels::JsonTreeState::default(),
+            filter: crate::filter::FilterState::default(),
             func_filter: String::new(),
             incremental: IncrementalState::default(),
             status_msg: None,
@@ -293,6 +342,7 @@ impl App {
             allow_close: false,
             tree_expanded: HashSet::new(),
             pending_goto: None,
+            goto_line_text: String::new(),
             egui_ctx: None,
             request_focus_editor: true,
             tab_drag: None,
@@ -362,11 +412,41 @@ impl App {
 
     // ---------------------------------------------------------------- styles
 
+    /// Chooses a theme in the settings (the dark one when following a dark
+    /// system) and shows it.
     pub fn set_theme(&mut self, idx: usize) {
+        let idx = idx.min(self.themes.themes.len() - 1);
+        let name = self.themes.themes[idx].name.clone();
+        if self.settings.follow_system_theme && self.system_dark {
+            self.settings.dark_theme = name;
+        } else {
+            self.settings.theme = name;
+        }
+        self.show_theme(idx);
+    }
+
+    /// Shows a theme without changing the settings.
+    pub fn show_theme(&mut self, idx: usize) {
         self.theme_idx = idx.min(self.themes.themes.len() - 1);
-        self.settings.theme = self.themes.themes[self.theme_idx].name.clone();
         self.globals = self.themes.themes[self.theme_idx].globals();
         self.styles_cache.clear();
+    }
+
+    /// Follows the OS light/dark setting when that option is on.
+    pub fn follow_system_theme(&mut self, dark: bool) {
+        self.system_dark = dark;
+        if !self.settings.follow_system_theme {
+            return;
+        }
+        let want = if dark {
+            &self.settings.dark_theme
+        } else {
+            &self.settings.theme
+        };
+        let idx = self.themes.index_of(want);
+        if idx != self.theme_idx {
+            self.show_theme(idx);
+        }
     }
 
     pub fn styles_for(&mut self, lang: usize) -> &LangStyles {
@@ -755,7 +835,11 @@ impl App {
     // ---------------------------------------------------------------- session
 
     pub fn build_session(&mut self, write_backups: bool) -> Session {
+        self.backups_written
+            .retain(|id, _| self.docs.get(id).is_some_and(Document::is_dirty));
         let mut session = Session {
+            window: self.window_geometry,
+            compare: Some(self.settings.compare.clone()),
             focused_view: u8::try_from(self.focused).unwrap_or(0),
             ..Default::default()
         };
@@ -782,12 +866,30 @@ impl App {
                         doc.id
                     );
                     let p = backup_dir.join(name);
-                    if std::fs::write(&p, doc.rope.to_string()).is_ok() {
+                    // Rewrite a backup only when its document changed, and
+                    // big documents at most every 30 s (always on exit).
+                    let now = std::time::Instant::now();
+                    let fresh = self.backups_written.get(id).is_some_and(|(v, at, path)| {
+                        path == &p
+                            && p.exists()
+                            && (*v == doc.version
+                                || (doc.len_chars() > BIG_BACKUP_CHARS
+                                    && !self.exit_requested
+                                    && now.duration_since(*at) < BIG_BACKUP_INTERVAL))
+                    });
+                    if fresh || write_backup_file(&p, &doc.rope).is_ok() {
+                        if !fresh {
+                            self.backups_written
+                                .insert(*id, (doc.version, now, p.clone()));
+                        }
                         live_backups.insert(p.clone());
                         backup = Some(p.display().to_string());
                     }
                 }
-                if doc.is_untitled() && backup.is_none() && doc.len_chars() == 0 {
+                if doc.transient || (doc.is_untitled() && backup.is_none() && doc.len_chars() == 0)
+                {
+                    // Empty tabs and temporary views (compare snapshots,
+                    // inline diffs) aren't part of the session.
                     continue;
                 }
                 session.files.push(SessionFile {
@@ -813,7 +915,6 @@ impl App {
                     tab_color: doc.tab_color,
                     pinned: doc.pinned,
                     dirty: doc.is_dirty(),
-                    monitoring: doc.monitoring,
                 });
             }
         }
@@ -888,7 +989,6 @@ impl App {
             doc.read_only |= f.read_only;
             doc.tab_color = f.tab_color;
             doc.pinned = f.pinned;
-            doc.monitoring = f.monitoring;
             let len = doc.len_chars();
             self.docs.insert(id, doc);
             self.panes[pane].tabs.push(id);
@@ -910,6 +1010,9 @@ impl App {
             self.panes.swap(0, 1);
         }
         self.focused = usize::from(session.focused_view.min(1));
+        if let Some(c) = session.compare {
+            self.settings.compare = c;
+        }
         if self.panes[self.focused].tabs.is_empty() {
             self.focused = 0;
         }
@@ -924,6 +1027,16 @@ impl App {
 
     /// Polls background work: find-in-files, single-instance IPC, file monitoring.
     pub fn poll(&mut self, now: f64) {
+        #[cfg(target_os = "macos")]
+        {
+            let files = crate::platform::finder::take();
+            if !files.is_empty() {
+                self.open_args(&files);
+                if let Some(ctx) = &self.egui_ctx {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                }
+            }
+        }
         if let Some(fif) = &mut self.fif {
             let mut done = false;
             while let Ok(msg) = fif.rx.try_recv() {
@@ -988,9 +1101,7 @@ impl App {
             }
         }
         self.poll_compare(now);
-        if (self.settings.file_monitoring || self.docs.values().any(|d| d.monitoring))
-            && now - self.last_monitor_check > 1.5
-        {
+        if self.settings.file_monitoring && now - self.last_monitor_check > 1.5 {
             self.last_monitor_check = now;
             self.check_external_changes();
         }
@@ -999,8 +1110,11 @@ impl App {
     pub fn open_args(&mut self, args: &[String]) {
         let mut line = None;
         let mut last = None;
-        for a in args {
-            if let Some(n) = a.strip_prefix("-n") {
+        let mut it = args.iter();
+        while let Some(a) = it.next() {
+            if a == "--session-dir" {
+                it.next(); // its folder argument isn't a file to open
+            } else if let Some(n) = a.strip_prefix("-n") {
                 line = n.parse::<usize>().ok();
             } else if a.starts_with('-') {
             } else {
@@ -1047,13 +1161,12 @@ impl App {
             }
             match std::fs::metadata(&path).and_then(|m| m.modified()) {
                 Ok(mt) if Some(mt) != d.mtime => {
-                    let tail = d.monitoring;
-                    if tail || (self.settings.update_silently && !d.is_dirty()) {
+                    if self.settings.update_silently && !d.is_dirty() {
                         let langs = &self.langs;
                         if let Some(d) = self.docs.get_mut(&id) {
                             let _ = d.reload(langs);
                         }
-                        if tail || self.settings.scroll_to_end_on_update {
+                        if self.settings.scroll_to_end_on_update {
                             for pane in 0..2 {
                                 if let (Some(vs), Some(d)) =
                                     (self.views.get_mut(&(pane, id)), self.docs.get(&id))
@@ -2268,14 +2381,37 @@ impl App {
             Command::ShowWrapSymbol => {
                 self.settings.show_wrap_symbol = !self.settings.show_wrap_symbol
             }
-            Command::ZoomIn | Command::ZoomOut | Command::ZoomRestore => {
-                self.with_active(|_, v, _| {
-                    v.zoom = match cmd {
-                        Command::ZoomIn => (v.zoom + 1).min(30),
-                        Command::ZoomOut => (v.zoom - 1).max(-10),
-                        _ => 0,
-                    };
-                });
+            Command::SetFontSize(size) => self.settings.font_size = f32::from(size),
+            Command::FontBigger | Command::FontSmaller => {
+                let step = if cmd == Command::FontBigger {
+                    1.0
+                } else {
+                    -1.0
+                };
+                self.settings.font_size = (self.settings.font_size.round() + step)
+                    .clamp(f32::from(MIN_FONT_SIZE), f32::from(MAX_FONT_SIZE));
+            }
+            Command::DateTimeTool => {
+                self.dialogs.datetime = Some(crate::dialogs::DateTimeDialog::now());
+            }
+            Command::NewWindow => {
+                if let Err(e) = crate::platform::open_new_window(&[]) {
+                    self.flash(format!("Couldn't open a new window: {e}"));
+                }
+            }
+            Command::MoveToNewWindow => {
+                if let Some(id) = self.active_id() {
+                    let doc = &self.docs[&id];
+                    match doc.path.clone() {
+                        Some(path) if !doc.is_dirty() => {
+                            match crate::platform::open_new_window(&[path]) {
+                                Ok(()) => self.close_tab(pane, id, false),
+                                Err(e) => self.flash(format!("Couldn't open a new window: {e}")),
+                            }
+                        }
+                        _ => self.flash("Save the document first to move it to a new window"),
+                    }
+                }
             }
             Command::MoveToOtherView | Command::CloneToOtherView => {
                 if let Some(id) = self.active_id() {
@@ -2378,20 +2514,23 @@ impl App {
             Command::ToggleFunctionList => {
                 self.settings.show_function_list = !self.settings.show_function_list
             }
+            Command::FilterLines => {
+                self.filter.open = true;
+                self.filter.focus = true;
+            }
+            Command::ExportFilteredLines => self.export_filtered_lines(),
+            Command::ToggleJsonTree => {
+                self.settings.show_json_tree = !self.settings.show_json_tree;
+                if !self.settings.show_json_tree {
+                    // Free the tree's memory while the panel is closed.
+                    self.json_tree = crate::panels::JsonTreeState::default();
+                }
+            }
             Command::ToggleFolderTree => {
                 self.settings.show_folder_tree = !self.settings.show_folder_tree
             }
             Command::SyncScrollV => self.settings.sync_scroll_v = !self.settings.sync_scroll_v,
             Command::SyncScrollH => self.settings.sync_scroll_h = !self.settings.sync_scroll_h,
-            Command::Monitoring => {
-                if let Some(id) = self.active_id()
-                    && let Some(d) = self.docs.get_mut(&id)
-                    && d.path.is_some()
-                {
-                    d.monitoring = !d.monitoring;
-                    d.read_only = d.monitoring;
-                }
-            }
             Command::ToggleToolbar => self.settings.show_toolbar = !self.settings.show_toolbar,
             Command::ToggleStatusbar => {
                 self.settings.show_statusbar = !self.settings.show_statusbar
@@ -2467,8 +2606,42 @@ impl App {
             Command::ShortcutMapper => self.dialogs.shortcut_mapper = true,
             Command::Hash(algo, source) => self.hash_command(algo, source),
             Command::Mime(op) => self.mime_command(op),
+            Command::Data(op) => {
+                use crate::commands::DataOp;
+                use crate::datatools as dt;
+                type Convert = fn(&str) -> Result<String, String>;
+                let (title, f): (&str, Convert) = match op {
+                    DataOp::CsvToJson => ("CSV to JSON", |s| dt::csv_to_json(s, ',')),
+                    DataOp::JsonToCsv => ("JSON to CSV", |s| dt::json_to_csv(s, ',')),
+                    DataOp::CsvToTsv => ("CSV to TSV", dt::csv_to_tsv),
+                    DataOp::TsvToCsv => ("TSV to CSV", dt::tsv_to_csv),
+                };
+                self.transform_text(title, f);
+            }
+            Command::InsertUuid => {
+                let id = crate::datatools::uuid_v4();
+                self.with_active(|d, v, _| ops::insert_text(d, v, &id, EditKind::Other));
+            }
             Command::Compare => self.compare_default(),
-            Command::CompareWith(a, b) => self.start_compare(a, b, None),
+            Command::CompareWith(a, b) => self.start_compare(a, b, Vec::new()),
+            Command::CompareSelections => self.compare_selections(),
+            Command::CompareBlank => self.compare_blank(),
+            Command::CompareSwap => self.compare_swap(),
+            Command::CompareInline => self.compare_inline(),
+            Command::CompareCopyAll(to_right) => self.compare_copy_all(to_right),
+            Command::CompareIgnoreFindText => {
+                let what = self.find.what.clone();
+                if what.is_empty() {
+                    self.flash("Type a regex in the Find box first");
+                } else {
+                    self.settings.compare.ignore_pattern = Some(what);
+                    self.recompute_compare();
+                }
+            }
+            Command::CompareClearIgnore => {
+                self.settings.compare.ignore_pattern = None;
+                self.recompute_compare();
+            }
             Command::CompareClipboard => self.compare_with_clipboard(),
             Command::CompareSaved => self.compare_with_saved(),
             Command::CompareClear => self.clear_compare(),
@@ -2484,6 +2657,8 @@ impl App {
                     1 => &mut o.ignore_case,
                     2 => &mut o.ignore_empty_lines,
                     3 => &mut o.word_diff,
+                    5 => &mut o.detect_moves,
+                    6 => &mut o.hide_panels,
                     _ => &mut o.auto,
                 };
                 *flag = !*flag;
@@ -2667,14 +2842,27 @@ impl App {
                 .map(|d| d.slice(0, 200))
                 .unwrap_or_default();
             let t = first.trim_start();
-            if matches!(lang.as_str(), "json" | "json5") || t.starts_with('{') || t.starts_with('[')
-            {
-                FormatOp::JsonPretty
-            } else if lang == "xml" || t.starts_with('<') {
-                FormatOp::XmlPretty
-            } else {
-                self.message("Format Document", "Couldn't tell whether this document is JSON or XML.\nUse Tools > Format to pick one.");
-                return;
+            match lang.as_str() {
+                "json" => FormatOp::JsonPretty,
+                "xml" => FormatOp::XmlPretty,
+                "html" | "php" => FormatOp::HtmlPretty,
+                "css" => FormatOp::CssPretty,
+                "javascript" | "typescript" => FormatOp::JsPretty,
+                "markdown" => FormatOp::MarkdownPretty,
+                _ if t.starts_with('{') || t.starts_with('[') => FormatOp::JsonPretty,
+                _ if t.to_ascii_lowercase().starts_with("<!doctype html")
+                    || t.starts_with("<html") =>
+                {
+                    FormatOp::HtmlPretty
+                }
+                _ if t.starts_with('<') => FormatOp::XmlPretty,
+                _ => {
+                    self.message(
+                        "Format Document",
+                        "There's no formatter for this language.\nUse Tools > Format to pick one.",
+                    );
+                    return;
+                }
             }
         } else {
             op
@@ -2695,6 +2883,34 @@ impl App {
             FormatOp::XmlMinify => (
                 "XML Minify",
                 self.transform_text("XML Minify", |s| f::xml_minify(s, &opts)),
+            ),
+            FormatOp::CssPretty => (
+                "CSS Format",
+                self.transform_text("CSS Format", |s| {
+                    crate::formatters_web::css_format(s, &opts)
+                }),
+            ),
+            FormatOp::CssMinify => (
+                "CSS Minify",
+                self.transform_text("CSS Minify", crate::formatters_web::css_minify),
+            ),
+            FormatOp::HtmlPretty => (
+                "HTML Format",
+                self.transform_text("HTML Format", |s| {
+                    crate::formatters_web::html_format(s, &opts)
+                }),
+            ),
+            FormatOp::JsPretty => (
+                "JavaScript Format",
+                self.transform_text("JavaScript Format", |s| {
+                    crate::formatters_web::js_format(s, &opts)
+                }),
+            ),
+            FormatOp::MarkdownPretty => (
+                "Markdown Format",
+                self.transform_text("Markdown Format", |s| {
+                    crate::formatters_web::markdown_format(s, &opts)
+                }),
             ),
             FormatOp::JsonValidate | FormatOp::XmlValidate => {
                 let json = op == FormatOp::JsonValidate;

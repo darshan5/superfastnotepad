@@ -17,12 +17,6 @@
     ],
     "skip": "//[^\\n]*|/\\*[\\s\\S]*?\\*/|\\\"(?:\\\\.|[^\\\"\\\\\\n])*\\\"|'(?:\\\\.|[^'\\\\\\n])'"
   },
-  "clojure": {
-    "functions": [
-      "^\\((?:defn-?|defmacro|defmulti)[ \\t]+(?P<name>[^\\s()\\[\\]]+)"
-    ],
-    "skip": ";[^\\n]*"
-  },
   "cpp": {
     "containers": [
       {
@@ -46,63 +40,11 @@
     ],
     "skip": "//[^\\n]*|/\\*[\\s\\S]*?\\*/|\\\"(?:\\\\.|[^\\\"\\\\\\n])*\\\"|'(?:\\\\.|[^'\\\\\\n])'"
   },
-  "dart": {
-    "containers": [
-      {
-        "start": "^[ \\t]*(?:abstract[ \\t]+)?(?:class|mixin|extension|enum)[ \\t]+(?P<name>\\w+)(?:(?!\\n[ \\t]*\\n)[^{;])*\\{"
-      }
-    ],
-    "functions": [
-      "^[ \\t]*(?:(?:static|external|factory|@\\w+)[ \\t]+)*(?:[\\w<>?,\\[\\]]+[ \\t]+)?(?!(?:if|else|for|foreach|while|do|switch|case|catch|return|sizeof|new|throw|using|lock|fixed|when|elif|until)\\b)(?P<name>\\w+)[ \\t]*(?:<[^>\\n]*>)?\\([^;{}]*\\)[ \\t]*(?:async\\*?|sync\\*)?[ \\t]*(?:\\{|=>)"
-    ],
-    "skip": "//[^\\n]*|/\\*[\\s\\S]*?\\*/|\\\"(?:\\\\.|[^\\\"\\\\\\n])*\\\"|'(?:\\\\.|[^'\\\\\\n])'"
-  },
-  "elixir": {
-    "containers": [
-      {
-        "body": "indent",
-        "start": "^[ \\t]*defmodule[ \\t]+(?P<name>[\\w.]+)"
-      }
-    ],
-    "functions": [
-      "^[ \\t]*(?:defp?|defmacrop?)[ \\t]+(?P<name>[\\w?!]+)"
-    ],
-    "skip": "#[^\\n]*|\\\"\\\"\\\"[\\s\\S]*?\\\"\\\"\\\"|\\\"(?:\\\\.|[^\\\"\\\\\\n])*\\\""
-  },
-  "erlang": {
-    "functions": [
-      "^(?P<name>[a-z]\\w*)\\([^)\\n]*\\)[^\\n]*->"
-    ],
-    "skip": "%[^\\n]*"
-  },
-  "fortran": {
-    "functions": [
-      "(?i)^[ \\t]*(?:(?:pure|elemental|recursive|module|impure)[ \\t]+)*(?:[\\w()*]+[ \\t]+)?(?:subroutine|function|program)[ \\t]+(?P<name>\\w+)"
-    ],
-    "skip": "![^\\n]*"
-  },
   "go": {
     "functions": [
       "^func[ \\t]+(?:\\([ \\t]*\\w*[ \\t]*\\*?(?P<class>\\w+)[^)]*\\)[ \\t]*)?(?P<name>\\w+)"
     ],
     "skip": "//[^\\n]*|/\\*[\\s\\S]*?\\*/|\\\"(?:\\\\.|[^\\\"\\\\\\n])*\\\"|`[^`]*`"
-  },
-  "groovy": {
-    "containers": [
-      {
-        "start": "^[ \\t]*(?:(?:public|private|protected|abstract|final)[ \\t]+)*(?:class|interface|trait|enum)[ \\t]+(?P<name>\\w+)(?:(?!\\n[ \\t]*\\n)[^{;])*\\{"
-      }
-    ],
-    "functions": [
-      "^[ \\t]*(?:(?:public|private|protected|static|final|def)[ \\t]+)+(?:[\\w.<>\\[\\]]+[ \\t]+)?(?!(?:if|else|for|foreach|while|do|switch|case|catch|return|sizeof|new|throw|using|lock|fixed|when|elif|until)\\b)(?P<name>\\w+)[ \\t]*\\([^;{}]*\\)\\s*\\{"
-    ],
-    "skip": "//[^\\n]*|/\\*[\\s\\S]*?\\*/|\\\"(?:\\\\.|[^\\\"\\\\\\n])*\\\"|'(?:\\\\.|[^'\\\\\\n])'"
-  },
-  "haskell": {
-    "functions": [
-      "^(?P<name>[a-z_][\\w']*)[ \\t]*::"
-    ],
-    "skip": "--[^\\n]*|\\{-[\\s\\S]*?-\\}"
   },
   "ini": {
     "functions": [
@@ -138,13 +80,6 @@
     ],
     "skip": "//[^\\n]*|/\\*[\\s\\S]*?\\*/|\\\"(?:\\\\.|[^\\\"\\\\\\n])*\\\"|'(?:\\\\.|[^'\\\\\\n])*'|`(?:\\\\[\\s\\S]|[^`\\\\])*`"
   },
-  "julia": {
-    "functions": [
-      "^[ \\t]*function[ \\t]+(?P<name>[\\w.!]+)",
-      "^(?P<name>[\\w.!]+)\\([^)\\n]*\\)[ \\t]*=(?!=)"
-    ],
-    "skip": "#=[\\s\\S]*?=#|#[^\\n]*|\\\"(?:\\\\.|[^\\\"\\\\\\n])*\\\""
-  },
   "kotlin": {
     "containers": [
       {
@@ -156,58 +91,11 @@
     ],
     "skip": "//[^\\n]*|/\\*[\\s\\S]*?\\*/|\\\"(?:\\\\.|[^\\\"\\\\\\n])*\\\"|'(?:\\\\.|[^'\\\\\\n])'"
   },
-  "latex": {
-    "functions": [
-      "\\\\(?:part|chapter|section|subsection|subsubsection)\\*?\\{(?P<name>[^}\\n]+)\\}"
-    ],
-    "skip": "(?<!\\\\)%[^\\n]*"
-  },
-  "lua": {
-    "functions": [
-      "^[ \\t]*(?:local[ \\t]+)?function[ \\t]+(?:(?P<class>[\\w.]+?)[.:])?(?P<name>\\w+)[ \\t]*\\(",
-      "^[ \\t]*(?:local[ \\t]+)?(?P<name>[\\w.]+)[ \\t]*=[ \\t]*function\\b"
-    ],
-    "skip": "--\\[(=*)\\[[\\s\\S]*?\\]\\1\\]|--[^\\n]*|\\\"(?:\\\\.|[^\\\"\\\\\\n])*\\\"|'(?:\\\\.|[^'\\\\\\n])*'"
-  },
-  "makefile": {
-    "functions": [
-      "^(?P<name>[^\\s:=#.][^:=#\\n]*?)[ \\t]*::?(?!=)"
-    ],
-    "skip": "#[^\\n]*"
-  },
   "markdown": {
     "functions": [
       "^(?P<name>#{1,6}[ \\t]+[^\\n]+)"
     ],
     "skip": "^```[\\s\\S]*?^```|^~~~[\\s\\S]*?^~~~"
-  },
-  "nim": {
-    "functions": [
-      "^[ \\t]*(?:proc|func|method|iterator|template|macro|converter)[ \\t]+(?P<name>\\w+|`[^`]+`)"
-    ],
-    "skip": "#\\[[\\s\\S]*?\\]#|#[^\\n]*|\\\"(?:\\\\.|[^\\\"\\\\\\n])*\\\""
-  },
-  "objc": {
-    "containers": [
-      {
-        "body": "indent",
-        "functions": [
-          "^[ \\t]*[-+][ \\t]*\\([^)]*\\)[ \\t]*(?P<name>\\w+)[^;{]*\\{"
-        ],
-        "start": "^@implementation[ \\t]+(?P<name>\\w+)[^\\n]*"
-      }
-    ],
-    "functions": [
-      "^(?:[\\w*&]+[ \\t]+[*&]*[ \\t]*)+(?!(?:if|else|for|foreach|while|do|switch|case|catch|return|sizeof|new|throw|using|lock|fixed|when|elif|until)\\b)(?P<name>\\w+)[ \\t]*\\([^;{}]*\\)\\s*\\{",
-      "^[ \\t]*[-+][ \\t]*\\([^)]*\\)[ \\t]*(?P<name>\\w+)[^;{]*\\{"
-    ],
-    "skip": "//[^\\n]*|/\\*[\\s\\S]*?\\*/|\\\"(?:\\\\.|[^\\\"\\\\\\n])*\\\"|'(?:\\\\.|[^'\\\\\\n])'"
-  },
-  "pascal": {
-    "functions": [
-      "(?i)^[ \\t]*(?:class[ \\t]+)?(?:procedure|function|constructor|destructor)[ \\t]+(?:(?P<class>\\w+)\\.)?(?P<name>\\w+)"
-    ],
-    "skip": "//[^\\n]*|\\{[\\s\\S]*?\\}|\\(\\*[\\s\\S]*?\\*\\)|'(?:''|[^'\\n])*'"
   },
   "perl": {
     "functions": [
@@ -252,24 +140,6 @@
     ],
     "skip": "\\\"\\\"\\\"[\\s\\S]*?\\\"\\\"\\\"|'''[\\s\\S]*?'''|#[^\\n]*|\\\"(?:\\\\.|[^\\\"\\\\\\n])*\\\"|'(?:\\\\.|[^'\\\\\\n])*'"
   },
-  "r": {
-    "functions": [
-      "^[ \\t]*(?P<name>[\\w.]+)[ \\t]*(?:<-|=)[ \\t]*function\\b"
-    ],
-    "skip": "#[^\\n]*|\\\"(?:\\\\.|[^\\\"\\\\\\n])*\\\"|'(?:\\\\.|[^'\\\\\\n])*'"
-  },
-  "ruby": {
-    "containers": [
-      {
-        "body": "indent",
-        "start": "^[ \\t]*(?:class|module)[ \\t]+(?P<name>[\\w:]+)"
-      }
-    ],
-    "functions": [
-      "^[ \\t]*def[ \\t]+(?:self\\.)?(?P<name>[\\w?!=]+|\\[\\]=?|[+\\-*/<=>!~%&|^]+)"
-    ],
-    "skip": "#[^\\n]*|^=begin[\\s\\S]*?^=end|\\\"(?:\\\\.|[^\\\"\\\\\\n])*\\\"|'(?:\\\\.|[^'\\\\\\n])*'"
-  },
   "rust": {
     "containers": [
       {
@@ -286,17 +156,6 @@
       "^[ \\t]*(?:pub(?:\\([^)]*\\))?[ \\t]+)?(?:(?:const|async|unsafe|extern(?:[ \\t]+\\\"[^\\\"]*\\\")?)[ \\t]+)*fn[ \\t]+(?P<name>\\w+)"
     ],
     "skip": "//[^\\n]*|/\\*[\\s\\S]*?\\*/|r#*\\\"[\\s\\S]*?\\\"#*|\\\"(?:\\\\[\\s\\S]|[^\\\"\\\\])*\\\"|b?'(?:\\\\.|[^'\\\\\\n])'"
-  },
-  "scala": {
-    "containers": [
-      {
-        "start": "^[ \\t]*(?:(?:case|abstract|sealed|final|private|protected|implicit)[ \\t]+)*(?:class|object|trait|enum)[ \\t]+(?P<name>\\w+)(?:(?!\\n[ \\t]*\\n)[^{;])*\\{"
-      }
-    ],
-    "functions": [
-      "^[ \\t]*(?:(?:override|private|protected|final|implicit|inline|lazy)[ \\t]+)*def[ \\t]+(?P<name>\\w+)"
-    ],
-    "skip": "//[^\\n]*|/\\*[\\s\\S]*?\\*/|\\\"(?:\\\\.|[^\\\"\\\\\\n])*\\\"|'(?:\\\\.|[^'\\\\\\n])'"
   },
   "sql": {
     "functions": [
@@ -315,12 +174,6 @@
       "^[ \\t]*(?:(?:public|private|fileprivate|internal|open|override|convenience|required)[ \\t]+)*(?P<name>init)\\??[ \\t]*\\("
     ],
     "skip": "//[^\\n]*|/\\*[\\s\\S]*?\\*/|\\\"(?:\\\\.|[^\\\"\\\\\\n])*\\\"|'(?:\\\\.|[^'\\\\\\n])'"
-  },
-  "toml": {
-    "functions": [
-      "^[ \\t]*\\[\\[?(?P<name>[^\\]\\n]+)\\]\\]?"
-    ],
-    "skip": "#[^\\n]*"
   },
   "typescript": {
     "containers": [
@@ -343,11 +196,5 @@
       "(?i)^[ \\t]*(?:(?:public|private|friend|protected|shared|overrides|overridable|mustoverride|static|async)[ \\t]+)*(?:sub|function|property(?:[ \\t]+(?:get|let|set))?)[ \\t]+(?P<name>\\w+)"
     ],
     "skip": "'[^\\n]*|\\\"(?:\\\"\\\"|[^\\\"\\n])*\\\""
-  },
-  "zig": {
-    "functions": [
-      "^[ \\t]*(?:pub[ \\t]+)?(?:(?:export|extern|inline)[ \\t]+)?fn[ \\t]+(?P<name>\\w+)"
-    ],
-    "skip": "//[^\\n]*|\\\"(?:\\\\.|[^\\\"\\\\\\n])*\\\""
   }
 }

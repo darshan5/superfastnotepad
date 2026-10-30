@@ -10,7 +10,7 @@ name = "superfastnotepad"
 path = "src/main.rs"
 
 [dependencies]
-eframe = { version = "0.37", default-features = false, features = ["glow", "persistence"] }
+eframe = { version = "0.37", default-features = false, features = ["glow"] }
 egui = "0.37"
 ropey = { version = "1.6", default-features = false, features = ["simd", "cr_lines"] }
 encoding_rs = "0.8"
@@ -30,6 +30,10 @@ unicode-width = "0.2"
 walkdir = "2"
 similar = { version = "3", features = ["unicode"] }
 arboard = { version = "3", default-features = false }
+
+# Receiving files opened from Finder (same version the window library uses).
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
 
 [profile.release]
 opt-level = 3

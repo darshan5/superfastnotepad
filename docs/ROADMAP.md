@@ -73,15 +73,19 @@ Windows locks mapped files, so the map must be released before saving over the s
 
 ## 2. Features not built yet
 
+Built since this list was first written (2026-10-30): JSON tree view, line filter with log-level
+highlighting, call tips and smarter completion, UUID and date/Unix time tools, CSV/TSV/JSON
+conversion, HTML/CSS/JS/TS/Markdown formatters, change-only backups every 3 s, `--session-dir`,
+following the OS light/dark setting, and the "Mixed" line-ending indicator. Spell check was
+dropped.
+
 ### Views
 
 | Feature | Effort |
 |---|---|
 | Hex view (read and edit bytes, offsets column) | M |
-| JSON tree view with JSON-pointer copy and jump from a node to its source | M |
 | Rendered Markdown preview | M |
 | CSV/TSV table view with sortable, resizable columns | M |
-| Large-file log viewer: filter lines by text or regex, highlight log levels, export the filtered lines | M |
 | Command palette (fuzzy search over all commands) | S |
 
 ### Editing and completion
@@ -89,9 +93,6 @@ Windows locks mapped files, so the map must be released before saving over the s
 | Feature | Effort |
 |---|---|
 | Editable keyboard shortcuts | S |
-| Function call tips and parameter hints | M |
-| Completion of local declarations and members | M |
-| Spell check for plain text and Markdown | M–L |
 | Natural sort and exact decimal sort | S |
 | User-defined languages | M |
 | Plugins with a versioned C ABI | L |
@@ -104,19 +105,14 @@ Windows locks mapped files, so the map must be released before saving over the s
 | YAML formatting | M |
 | HTML entity and JSON string escape/unescape | S |
 | JWT decode (header and payload, local only) | S |
-| Insert a UUID; Unix timestamp ↔ date conversion | S |
-| CSV ↔ JSON and CSV ↔ TSV conversion | S |
-| Formatters for HTML, CSS, JavaScript/TypeScript and Markdown | L |
 
 ### Files and sessions
 
 | Feature | Effort |
 |---|---|
-| Backups every 1–3 s (today every 7 s); store only edits for big files | S / M |
 | Scratchpad: a persistent note with no Save dialog | S |
 | Optional autosave after a delay or on focus loss | S |
 | Crash recovery prompt and panic log | S |
-| Separate session folders (`--session-dir`) | S |
 | `--wait` on the command line (block until the file is closed, for `git commit`) | S |
 | Offer to detach when a file is truncated | S |
 | Go to a percentage of the file | S |
@@ -125,9 +121,7 @@ Windows locks mapped files, so the map must be released before saving over the s
 
 | Feature | Effort |
 |---|---|
-| Native macOS menu bar and dock-icon reopen | M |
-| Follow the OS light/dark setting | S |
+| Native macOS menu bar, Dock-icon reopen, and opening files from Finder | M |
 | Translations | M |
-| "Mixed" line-ending indicator in the status bar | S |
 | Optional, signed update check | M |
 | Font fallback for scripts the system monospace font lacks (CJK) | S |

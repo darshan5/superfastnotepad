@@ -15,6 +15,8 @@ include!(concat!(env!("OUT_DIR"), "/themes.rs"));
 
 /// The theme used when the configured one doesn't exist.
 pub const DEFAULT_THEME: &str = "Light";
+/// The dark theme used when following the system's dark mode.
+pub const DEFAULT_DARK_THEME: &str = "Dark";
 
 #[derive(Clone, Copy, Debug, Default, Deserialize)]
 struct TokenSource {

@@ -34,6 +34,76 @@ impl Default for ColumnEditorState {
     }
 }
 
+/// State of the "Date and Unix Time" tool: a date/time picker converted to
+/// Unix time, and a Unix time converted back to a date.
+#[derive(Clone, Debug)]
+pub struct DateTimeDialog {
+    /// Picker fields: year, month, day, hour, minute, second.
+    pub parts: [i32; 6],
+    /// The picker is in UTC rather than local time.
+    pub utc: bool,
+    /// Unix time to convert to a date (seconds, or milliseconds if 13+ digits).
+    pub unix_input: String,
+    /// A typed or pasted date (RFC 3339, `YYYY-MM-DD HH:MM:SS` or `YYYY-MM-DD`).
+    pub date_input: String,
+}
+
+impl DateTimeDialog {
+    pub fn now() -> Self {
+        use chrono::{Datelike, Timelike};
+        let n = chrono::Local::now();
+        #[allow(clippy::cast_possible_wrap)]
+        let parts = [
+            n.year(),
+            n.month() as i32,
+            n.day() as i32,
+            n.hour() as i32,
+            n.minute() as i32,
+            n.second() as i32,
+        ];
+        Self {
+            parts,
+            utc: false,
+            unix_input: n.timestamp().to_string(),
+            date_input: String::new(),
+        }
+    }
+
+    /// Unix seconds for the picker, or None for an impossible date (Feb 30)
+    /// or a local time skipped by a daylight-saving change.
+    pub fn picked_unix(&self) -> Option<i64> {
+        use chrono::TimeZone;
+        let [y, mo, d, h, mi, s] = self.parts;
+        let date =
+            chrono::NaiveDate::from_ymd_opt(y, u32::try_from(mo).ok()?, u32::try_from(d).ok()?)?;
+        let naive = date.and_hms_opt(
+            u32::try_from(h).ok()?,
+            u32::try_from(mi).ok()?,
+            u32::try_from(s).ok()?,
+        )?;
+        if self.utc {
+            Some(chrono::Utc.from_utc_datetime(&naive).timestamp())
+        } else {
+            chrono::Local
+                .from_local_datetime(&naive)
+                .earliest()
+                .map(|t| t.timestamp())
+        }
+    }
+}
+
+/// Parses a Unix time (seconds, or milliseconds when 13 or more digits).
+pub fn parse_unix(text: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    let t = text.trim();
+    let n: i64 = t.parse().ok()?;
+    let digits = t.trim_start_matches('-').len();
+    if digits >= 13 {
+        chrono::DateTime::from_timestamp_millis(n)
+    } else {
+        chrono::DateTime::from_timestamp(n, 0)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct HashDialog {
     pub algo: HashAlgo,
@@ -152,7 +222,7 @@ impl App {
                             .num_columns(2)
                             .spacing([8.0, 6.0])
                             .show(ui, |ui| {
-                                ui.label("Find what :");
+                                ui.label("Find what:");
                                 let hist = self.settings.find_history.clone();
                                 let r = history_combo(
                                     ui,
@@ -172,7 +242,7 @@ impl App {
                                 ui.end_row();
                                 if matches!(self.find.tab, FindTab::Replace | FindTab::FindInFiles)
                                 {
-                                    ui.label("Replace with :");
+                                    ui.label("Replace with:");
                                     let hist = self.settings.replace_history.clone();
                                     history_combo(
                                         ui,
@@ -185,7 +255,7 @@ impl App {
                                     ui.end_row();
                                 }
                                 if self.find.tab == FindTab::FindInFiles {
-                                    ui.label("Filters :");
+                                    ui.label("Filters:");
                                     let hist = self.settings.fif_filters.clone();
                                     history_combo(
                                         ui,
@@ -196,7 +266,7 @@ impl App {
                                         false,
                                     );
                                     ui.end_row();
-                                    ui.label("Directory :");
+                                    ui.label("Directory:");
                                     ui.horizontal(|ui| {
                                         let hist = self.settings.fif_dirs.clone();
                                         history_combo(
@@ -389,7 +459,7 @@ impl App {
                     (d.char_to_line(h) + 1, d.line_count(), h, d.len_chars())
                 })
                 .unwrap_or((1, 1, 0, 0));
-            egui::Window::new("Go To...")
+            egui::Window::new("Go to Line")
                 .open(&mut open)
                 .collapsible(false)
                 .resizable(false)
@@ -403,7 +473,7 @@ impl App {
                         if by_line { cur_line } else { cur_pos }
                     ));
                     ui.horizontal(|ui| {
-                        ui.label("You want to go to :");
+                        ui.label("Go to:");
                         let r = ui.text_edit_singleline(&mut value);
                         r.request_focus();
                         if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
@@ -461,26 +531,63 @@ impl App {
 
         if self.dialogs.style_config {
             let mut open = true;
-            egui::Window::new("Style Configurator")
+            egui::Window::new("Theme and Font")
                 .open(&mut open)
                 .default_width(420.0)
                 .show(ctx, |ui| {
-                    ui.label("Select theme :");
-                    let mut idx = self.theme_idx;
-                    egui::ComboBox::from_id_salt("theme")
-                        .selected_text(self.themes.themes[idx].name.clone())
-                        .width(300.0)
-                        .show_ui(ui, |ui| {
-                            for (i, t) in self.themes.themes.iter().enumerate() {
-                                ui.selectable_value(&mut idx, i, t.name.clone());
-                            }
-                        });
-                    if idx != self.theme_idx {
-                        self.set_theme(idx);
+                    let mut follow = self.settings.follow_system_theme;
+                    ui.checkbox(&mut follow, "Match the system light/dark setting");
+                    if follow != self.settings.follow_system_theme {
+                        self.settings.follow_system_theme = follow;
+                        if !follow {
+                            // Keep showing what's on screen now.
+                            self.settings.theme = self.themes.themes[self.theme_idx].name.clone();
+                        }
+                        let dark = self.system_dark;
+                        self.follow_system_theme(dark);
+                    }
+                    let names: Vec<String> =
+                        self.themes.themes.iter().map(|t| t.name.clone()).collect();
+                    let combo =
+                        |ui: &mut Ui, id: &str, label: &str, current: &str| -> Option<usize> {
+                            let mut pick = None;
+                            ui.horizontal(|ui| {
+                                ui.label(label);
+                                egui::ComboBox::from_id_salt(id)
+                                    .selected_text(current)
+                                    .width(220.0)
+                                    .show_ui(ui, |ui| {
+                                        for (i, n) in names.iter().enumerate() {
+                                            if ui.selectable_label(n == current, n).clicked() {
+                                                pick = Some(i);
+                                            }
+                                        }
+                                    });
+                            });
+                            pick
+                        };
+                    if self.settings.follow_system_theme {
+                        let (light, dark) = (
+                            self.settings.theme.clone(),
+                            self.settings.dark_theme.clone(),
+                        );
+                        if let Some(i) = combo(ui, "theme_light", "Light theme:", &light) {
+                            self.settings.theme = names[i].clone();
+                        }
+                        if let Some(i) = combo(ui, "theme_dark", "Dark theme:", &dark) {
+                            self.settings.dark_theme = names[i].clone();
+                        }
+                        let dark = self.system_dark;
+                        self.follow_system_theme(dark);
+                    } else {
+                        let current = names[self.theme_idx].clone();
+                        if let Some(i) = combo(ui, "theme", "Theme:", &current) {
+                            self.set_theme(i);
+                        }
                     }
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
-                        ui.label("Global font size :");
+                        ui.label("Editor font size (pt):");
                         ui.add(
                             egui::DragValue::new(&mut self.settings.font_size)
                                 .range(6.0..=48.0)
@@ -488,7 +595,7 @@ impl App {
                         );
                     });
                     ui.horizontal(|ui| {
-                        ui.label("UI scale :");
+                        ui.label("Interface scale:");
                         ui.add(
                             egui::DragValue::new(&mut self.settings.ui_scale)
                                 .range(0.6..=2.5)
@@ -535,7 +642,7 @@ impl App {
 
         if self.dialogs.shortcut_mapper {
             let mut open = true;
-            egui::Window::new("Shortcut Mapper")
+            egui::Window::new("Keyboard Shortcuts")
                 .open(&mut open)
                 .default_size([520.0, 480.0])
                 .show(ctx, |ui| {
@@ -569,7 +676,7 @@ impl App {
         if let Some(mut st) = self.dialogs.column_editor.clone() {
             let mut open = true;
             let mut ok = false;
-            egui::Window::new("Column / Multi-Selection Editor")
+            egui::Window::new("Column Editor")
                 .open(&mut open)
                 .resizable(false)
                 .show(ctx, |ui| {
@@ -579,24 +686,24 @@ impl App {
                     ui.radio_value(&mut st.text_mode, false, "Number to Insert");
                     ui.add_enabled_ui(!st.text_mode, |ui| {
                         egui::Grid::new("col_grid").show(ui, |ui| {
-                            ui.label("Initial number :");
+                            ui.label("Initial number:");
                             ui.text_edit_singleline(&mut st.initial);
                             ui.end_row();
-                            ui.label("Increase by :");
+                            ui.label("Increase by:");
                             ui.text_edit_singleline(&mut st.increase);
                             ui.end_row();
-                            ui.label("Repeat :");
+                            ui.label("Repeat:");
                             ui.text_edit_singleline(&mut st.repeat);
                             ui.end_row();
                         });
                         ui.horizontal(|ui| {
-                            ui.label("Leading :");
+                            ui.label("Leading:");
                             ui.radio_value(&mut st.leading, LeadingMode::None, "None");
                             ui.radio_value(&mut st.leading, LeadingMode::Zeros, "Zeros");
                             ui.radio_value(&mut st.leading, LeadingMode::Spaces, "Spaces");
                         });
                         ui.horizontal(|ui| {
-                            ui.label("Format :");
+                            ui.label("Format:");
                             ui.radio_value(&mut st.format, NumFormat::Dec, "Dec");
                             ui.radio_value(&mut st.format, NumFormat::Hex, "Hex");
                             ui.radio_value(&mut st.format, NumFormat::Oct, "Oct");
@@ -681,7 +788,7 @@ impl App {
                     d.encoding.encode(&text).len(),
                 ))
             });
-            egui::Window::new("Summary")
+            egui::Window::new("Document Summary")
                 .open(&mut open)
                 .resizable(false)
                 .show(ctx, |ui| {
@@ -739,7 +846,7 @@ impl App {
         if let Some(mut h) = self.dialogs.hash.clone() {
             let mut open = true;
             let mut copy = None;
-            egui::Window::new(format!("Generate {} digest", h.algo.name()))
+            egui::Window::new(format!("{} Hash", h.algo.name()))
                 .open(&mut open)
                 .default_width(520.0)
                 .show(ctx, |ui| {
@@ -783,7 +890,7 @@ impl App {
         if self.dialogs.windows {
             let mut open = true;
             let mut action: Option<(&str, u64)> = None;
-            egui::Window::new("Windows")
+            egui::Window::new("All Open Documents")
                 .open(&mut open)
                 .default_size([640.0, 360.0])
                 .show(ctx, |ui| {
@@ -869,7 +976,7 @@ impl App {
         if let Some(mut cr) = self.dialogs.char_range.clone() {
             let mut open = true;
             let mut find = false;
-            egui::Window::new("Find Characters in Range...")
+            egui::Window::new("Find Characters in Range")
                 .open(&mut open)
                 .resizable(false)
                 .show(ctx, |ui| {
@@ -950,7 +1057,7 @@ impl App {
                 .resizable(false)
                 .show(ctx, |ui| {
                     ui.horizontal(|ui| {
-                        ui.label("New name :");
+                        ui.label("New name:");
                         ui.text_edit_singleline(&mut name).request_focus();
                     });
                     if ui.button("OK").clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
@@ -998,6 +1105,167 @@ impl App {
                     ui.label("License: MIT.");
                 });
             self.dialogs.about = open;
+        }
+
+        if let Some(mut st) = self.dialogs.datetime.take() {
+            let mut open = true;
+            let mut insert: Option<String> = None;
+            let mut copy: Option<String> = None;
+            egui::Window::new("Date and Unix Time")
+                .open(&mut open)
+                .resizable(false)
+                .collapsible(false)
+                .show(ctx, |ui| {
+                    let row = |ui: &mut Ui,
+                               label: &str,
+                               value: String,
+                               insert: &mut Option<String>,
+                               copy: &mut Option<String>| {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(label).weak());
+                            ui.monospace(&value);
+                            if ui.small_button("Insert").clicked() {
+                                *insert = Some(value.clone());
+                            }
+                            if ui.small_button("Copy").clicked() {
+                                *copy = Some(value);
+                            }
+                        });
+                    };
+                    // Live clock.
+                    ui.strong("Now");
+                    let now = chrono::Local::now();
+                    row(
+                        ui,
+                        "Local:",
+                        now.format("%Y-%m-%d %H:%M:%S %:z").to_string(),
+                        &mut insert,
+                        &mut copy,
+                    );
+                    row(
+                        ui,
+                        "UTC:  ",
+                        now.with_timezone(&chrono::Utc)
+                            .format("%Y-%m-%dT%H:%M:%SZ")
+                            .to_string(),
+                        &mut insert,
+                        &mut copy,
+                    );
+                    row(
+                        ui,
+                        "Unix: ",
+                        now.timestamp().to_string(),
+                        &mut insert,
+                        &mut copy,
+                    );
+                    ctx.request_repaint_after(std::time::Duration::from_millis(
+                        1000 - u64::from(now.timestamp_subsec_millis()),
+                    ));
+                    ui.separator();
+
+                    // Date picker -> Unix time.
+                    ui.strong("Date to Unix time");
+                    ui.horizontal(|ui| {
+                        let [y, mo, d, h, mi, s] = &mut st.parts;
+                        ui.add(egui::DragValue::new(y).range(1..=9999).prefix("Y "));
+                        ui.add(egui::DragValue::new(mo).range(1..=12).prefix("M "));
+                        ui.add(egui::DragValue::new(d).range(1..=31).prefix("D "));
+                        ui.label(" ");
+                        ui.add(egui::DragValue::new(h).range(0..=23).suffix(" h"));
+                        ui.add(egui::DragValue::new(mi).range(0..=59).suffix(" m"));
+                        ui.add(egui::DragValue::new(s).range(0..=59).suffix(" s"));
+                    });
+                    ui.horizontal(|ui| {
+                        ui.radio_value(&mut st.utc, false, "Local time");
+                        ui.radio_value(&mut st.utc, true, "UTC");
+                        if ui.small_button("Now").clicked() {
+                            let utc = st.utc;
+                            st.parts = DateTimeDialog::now().parts;
+                            if utc {
+                                use chrono::{Datelike, Timelike};
+                                let n = chrono::Utc::now();
+                                #[allow(clippy::cast_possible_wrap)]
+                                {
+                                    st.parts = [
+                                        n.year(),
+                                        n.month() as i32,
+                                        n.day() as i32,
+                                        n.hour() as i32,
+                                        n.minute() as i32,
+                                        n.second() as i32,
+                                    ];
+                                }
+                            }
+                        }
+                    });
+                    match st.picked_unix() {
+                        Some(t) => {
+                            row(ui, "Unix: ", t.to_string(), &mut insert, &mut copy);
+                            row(ui, "ms:   ", (t * 1000).to_string(), &mut insert, &mut copy);
+                        }
+                        None => {
+                            ui.label(RichText::new("Not a valid date or time").color(Color32::RED));
+                        }
+                    }
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Or type a date:").weak());
+                        ui.add(
+                            egui::TextEdit::singleline(&mut st.date_input)
+                                .desired_width(200.0)
+                                .hint_text("2026-10-30T14:05:00Z"),
+                        );
+                    });
+                    if !st.date_input.trim().is_empty() {
+                        match crate::datatools::date_to_timestamp(&st.date_input) {
+                            Ok(t) => row(ui, "Unix: ", t, &mut insert, &mut copy),
+                            Err(e) => {
+                                ui.label(RichText::new(e).color(Color32::RED));
+                            }
+                        }
+                    }
+                    ui.separator();
+
+                    // Unix time -> date.
+                    ui.strong("Unix time to date");
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut st.unix_input)
+                                .desired_width(160.0)
+                                .hint_text("seconds or ms"),
+                        );
+                        st.unix_input.retain(|c| c.is_ascii_digit() || c == '-');
+                    });
+                    match parse_unix(&st.unix_input) {
+                        Some(t) => {
+                            let local = t.with_timezone(&chrono::Local);
+                            row(
+                                ui,
+                                "Local:",
+                                local.format("%Y-%m-%d %H:%M:%S %:z").to_string(),
+                                &mut insert,
+                                &mut copy,
+                            );
+                            if let Ok(utc) = crate::datatools::timestamp_to_date(&st.unix_input) {
+                                row(ui, "UTC:  ", utc, &mut insert, &mut copy);
+                            }
+                        }
+                        None if st.unix_input.trim().is_empty() => {}
+                        None => {
+                            ui.label(RichText::new("Not a valid Unix time").color(Color32::RED));
+                        }
+                    }
+                });
+            if let Some(t) = copy {
+                ctx.copy_text(t);
+            }
+            if let Some(t) = insert {
+                self.with_active(|d, v, _| {
+                    crate::ops::insert_text(d, v, &t, crate::document::EditKind::Other)
+                });
+            }
+            if open {
+                self.dialogs.datetime = Some(st);
+            }
         }
 
         if self.dialogs.command_line {
@@ -1094,13 +1362,13 @@ impl App {
                             "Single instance (open files in the running window)",
                         );
                         ui.horizontal(|ui| {
-                            ui.label("Max. recent files :");
+                            ui.label("Recent files to remember:");
                             ui.add(egui::DragValue::new(&mut s.recent_max).range(0..=30));
                         });
                     }
                     1 => {
                         ui.horizontal(|ui| {
-                            ui.label("Tab size :");
+                            ui.label("Tab size:");
                             ui.add(egui::DragValue::new(&mut s.tab_size).range(1..=16));
                             ui.checkbox(&mut s.use_spaces, "Replace by space");
                         });
@@ -1124,7 +1392,7 @@ impl App {
                         );
                         ui.checkbox(&mut s.caret_blink, "Caret blink");
                         ui.horizontal(|ui| {
-                            ui.label("Caret width :");
+                            ui.label("Caret width:");
                             ui.add(
                                 egui::DragValue::new(&mut s.caret_width)
                                     .range(1.0..=4.0)
@@ -1132,12 +1400,12 @@ impl App {
                             );
                         });
                         ui.horizontal(|ui| {
-                            ui.label("Vertical edge column (0 = none) :");
+                            ui.label("Vertical edge column (0 = none):");
                             ui.add(egui::DragValue::new(&mut s.edge_column).range(0..=500));
                         });
                     }
                     2 => {
-                        ui.label("Format (Line ending) :");
+                        ui.label("Line endings:");
                         ui.horizontal(|ui| {
                             ui.radio_value(
                                 &mut s.default_eol,
@@ -1155,7 +1423,7 @@ impl App {
                                 "Macintosh (CR)",
                             );
                         });
-                        ui.label("Encoding :");
+                        ui.label("Encoding:");
                         for (k, l) in [
                             ("ansi", "ANSI"),
                             ("utf8", "UTF-8"),
@@ -1166,7 +1434,7 @@ impl App {
                             ui.radio_value(&mut s.default_encoding, k.to_string(), l);
                         }
                         ui.horizontal(|ui| {
-                            ui.label("Default language :");
+                            ui.label("Default language:");
                             let cur = self
                                 .langs
                                 .by_name(&s.default_lang)
@@ -1229,7 +1497,7 @@ impl App {
                             "Smart highlighting: match whole word only",
                         );
                         ui.horizontal(|ui| {
-                            ui.label("Search engine :");
+                            ui.label("Search engine:");
                             ui.text_edit_singleline(&mut s.search_engine);
                         });
                     }
@@ -1238,12 +1506,12 @@ impl App {
                         let f = &mut s.format;
                         ui.label(RichText::new("Options for Tools > Format").strong());
                         ui.horizontal(|ui| {
-                            ui.label("tabWidth :");
+                            ui.label("tabWidth:");
                             ui.add(egui::DragValue::new(&mut f.tab_width).range(1..=8));
                             ui.checkbox(&mut f.use_tabs, "useTabs");
                         });
                         ui.horizontal(|ui| {
-                            ui.label("printWidth :");
+                            ui.label("printWidth:");
                             ui.add(egui::DragValue::new(&mut f.print_width).range(20..=400));
                         });
                         ui.separator();
@@ -1255,12 +1523,12 @@ impl App {
                         ui.separator();
                         ui.label("XML");
                         ui.horizontal(|ui| {
-                            ui.label("xmlWhitespaceSensitivity :");
+                            ui.label("xmlWhitespaceSensitivity:");
                             ui.radio_value(&mut f.xml_whitespace, XmlWhitespace::Strict, "strict");
                             ui.radio_value(&mut f.xml_whitespace, XmlWhitespace::Ignore, "ignore");
                         });
                         ui.horizontal(|ui| {
-                            ui.label("xmlQuoteAttributes :");
+                            ui.label("xmlQuoteAttributes:");
                             ui.radio_value(&mut f.xml_quotes, XmlQuotes::Preserve, "preserve");
                             ui.radio_value(&mut f.xml_quotes, XmlQuotes::Double, "double");
                             ui.radio_value(&mut f.xml_quotes, XmlQuotes::Single, "single");
@@ -1275,7 +1543,7 @@ impl App {
                     }
                     _ => {
                         ui.horizontal(|ui| {
-                            ui.label("Custom date/time format :");
+                            ui.label("Custom date/time format:");
                             ui.text_edit_singleline(&mut s.date_time_format);
                         });
                         ui.label(crate::config::format_date(

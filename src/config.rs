@@ -12,7 +12,11 @@ use crate::search::SearchOptions;
 #[serde(default)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct Settings {
+    /// Theme in use; while following the system setting, the light theme.
     pub theme: String,
+    /// Switch between `theme` and `dark_theme` with the OS light/dark setting.
+    pub follow_system_theme: bool,
+    pub dark_theme: String,
     pub font_size: f32,
     pub ui_scale: f32,
     pub tab_size: usize,
@@ -62,6 +66,7 @@ pub struct Settings {
     pub copy_line_without_selection: bool,
     pub single_instance: bool,
     pub show_function_list: bool,
+    pub show_json_tree: bool,
     pub show_doc_list: bool,
     pub show_folder_tree: bool,
     pub show_doc_map: bool,
@@ -88,6 +93,8 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             theme: crate::theme::DEFAULT_THEME.into(),
+            follow_system_theme: true,
+            dark_theme: crate::theme::DEFAULT_DARK_THEME.into(),
             font_size: 13.0,
             ui_scale: 1.0,
             tab_size: 4,
@@ -135,6 +142,7 @@ impl Default for Settings {
             copy_line_without_selection: true,
             single_instance: true,
             show_function_list: false,
+            show_json_tree: false,
             show_doc_list: false,
             show_folder_tree: false,
             show_doc_map: false,
@@ -189,12 +197,24 @@ pub struct SessionFile {
     pub tab_color: Option<u8>,
     pub pinned: bool,
     pub dirty: bool,
-    pub monitoring: bool,
+}
+
+/// Window position and size in points, restored with the session.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct WindowGeometry {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub maximized: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Session {
+    pub window: Option<WindowGeometry>,
+    /// Compare options of this session (each `--session-dir` keeps its own).
+    pub compare: Option<crate::compare::CompareOptions>,
     pub files: Vec<SessionFile>,
     pub active: [Option<usize>; 2],
     pub focused_view: u8,
@@ -216,20 +236,40 @@ pub fn config_dir() -> PathBuf {
     )
 }
 
+static SESSION_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Keeps the session, unsaved-content backups and the single-instance lock
+/// in `dir` instead of the settings folder (`--session-dir`), so separate
+/// workspaces don't share open files. Settings stay shared.
+pub fn set_session_dir(dir: PathBuf) {
+    let _ = SESSION_DIR.set(dir);
+}
+
+pub fn session_dir() -> PathBuf {
+    SESSION_DIR.get().cloned().unwrap_or_else(config_dir)
+}
+
 pub fn backup_dir() -> PathBuf {
-    config_dir().join("backup")
+    session_dir().join("backup")
 }
 
 fn load_json<T: for<'de> Deserialize<'de> + Default>(name: &str) -> T {
-    std::fs::read_to_string(config_dir().join(name))
+    load_json_in(&config_dir(), name)
+}
+
+fn load_json_in<T: for<'de> Deserialize<'de> + Default>(dir: &std::path::Path, name: &str) -> T {
+    std::fs::read_to_string(dir.join(name))
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default()
 }
 
 fn save_json<T: Serialize>(name: &str, value: &T) {
-    let dir = config_dir();
-    let _ = std::fs::create_dir_all(&dir);
+    save_json_in(&config_dir(), name, value);
+}
+
+fn save_json_in<T: Serialize>(dir: &std::path::Path, name: &str, value: &T) {
+    let _ = std::fs::create_dir_all(dir);
     if let Ok(s) = serde_json::to_string_pretty(value) {
         let tmp = dir.join(format!("{name}.tmp"));
         if std::fs::write(&tmp, s).is_ok() {
@@ -247,11 +287,11 @@ pub fn save_settings(s: &Settings) {
 }
 
 pub fn load_session() -> Session {
-    load_json("session.json")
+    load_json_in(&session_dir(), "session.json")
 }
 
 pub fn save_session(s: &Session) {
-    save_json("session.json", s);
+    save_json_in(&session_dir(), "session.json", s);
 }
 
 pub fn load_persisted() -> Persisted {
