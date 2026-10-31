@@ -1,6 +1,6 @@
 [package]
 name = "superfastnotepad"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 license = "MIT"
 description = "A fast text editor written in pure Rust (Windows + macOS)"
@@ -32,6 +32,7 @@ similar = { version = "3", features = ["unicode"] }
 arboard = { version = "3", default-features = false }
 # OS secure random numbers for the password generator.
 getrandom = "0.4"
+trash = "5"
 
 # Receiving files opened from Finder (same version the window library uses).
 [target.'cfg(target_os = "macos")'.dependencies]

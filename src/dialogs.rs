@@ -2,7 +2,7 @@
 
 use egui::{Color32, Context, RichText, Ui};
 
-use crate::app::{App, FindTab, Prompt, StatusKind};
+use crate::app::{App, FindTab, Prompt, RenameTarget, StatusKind};
 use crate::commands::Command;
 use crate::document::Selection;
 use crate::search::SearchMode;
@@ -856,12 +856,24 @@ impl App {
                                             let Some(d) = self.docs.get(id) else { continue };
                                             let sel = self.dialogs.windows_selected == Some(*id);
                                             let r = ui.selectable_label(sel, App::doc_label(d));
-                                            if r.clicked() {
+                                            if r.clicked() || r.secondary_clicked() {
                                                 action = Some(("select", *id));
                                             }
                                             if r.double_clicked() {
                                                 action = Some(("activate", *id));
                                             }
+                                            r.context_menu(|ui| {
+                                                if ui.button("Go to Tab").clicked() {
+                                                    action = Some(("activate", *id));
+                                                }
+                                                ui.separator();
+                                                if let Some(op) = crate::panels::file_ops_menu(
+                                                    ui,
+                                                    d.path.as_deref(),
+                                                ) {
+                                                    action = Some((op.key(), *id));
+                                                }
+                                            });
                                             ui.label(
                                                 d.path
                                                     .as_ref()
@@ -891,6 +903,29 @@ impl App {
                             if ui.button("Close Tab").clicked() {
                                 action = Some(("close", id));
                             }
+                            ui.separator();
+                            let saved = self
+                                .docs
+                                .get(&id)
+                                .and_then(|d| d.path.as_ref())
+                                .is_some_and(|p| p.exists());
+                            if ui
+                                .add_enabled(saved, egui::Button::new("Duplicate"))
+                                .clicked()
+                            {
+                                action = Some(("duplicate", id));
+                            }
+                            if ui.button("Rename...").clicked() {
+                                action = Some(("rename", id));
+                            }
+                            if ui
+                                .add_enabled(saved, egui::Button::new("Delete..."))
+                                .on_hover_text(crate::app::TRASH_LABEL)
+                                .clicked()
+                            {
+                                action = Some(("delete", id));
+                            }
+                            ui.separator();
                         }
                         if ui.button("Sort Tabs by Name").clicked() {
                             out.push(Command::SortTabs(crate::commands::TabSort::NameAsc));
@@ -910,7 +945,7 @@ impl App {
                         self.save_doc(id, false);
                     }
                     "close" => self.close_tab(pane, id, false),
-                    _ => {}
+                    other => self.doc_file_op(id, other),
                 }
             }
             if !open {
@@ -998,7 +1033,7 @@ impl App {
             self.dialogs.char_range = open.then_some(cr);
         }
 
-        if let Some((id, mut name)) = self.dialogs.rename.clone() {
+        if let Some((target, mut name)) = self.dialogs.rename.clone() {
             let mut open = true;
             let mut ok = false;
             let mut cancel = false;
@@ -1025,29 +1060,36 @@ impl App {
                 open = false;
             }
             if ok {
+                // A saved document renames its file; an unsaved one just
+                // renames the tab.
+                let file = match &target {
+                    RenameTarget::File(p) => Some(p.clone()),
+                    RenameTarget::Doc(id) => self
+                        .docs
+                        .get(id)
+                        .and_then(|d| d.path.clone())
+                        .filter(|p| p.exists()),
+                };
                 let mut err = None;
-                if let Some(d) = self.docs.get_mut(&id) {
-                    if let Some(p) = d.path.clone().filter(|p| p.exists()) {
-                        let np = p.with_file_name(&name);
-                        match std::fs::rename(&p, &np) {
-                            Ok(()) => {
-                                d.path = Some(np);
-                                d.mtime = d.path.as_ref().and_then(|p| {
-                                    std::fs::metadata(p).and_then(|m| m.modified()).ok()
-                                });
-                            }
-                            Err(e) => err = Some(e.to_string()),
-                        }
-                    } else {
-                        d.untitled_name = name.clone();
+                if let Some(p) = file {
+                    if let Err(e) = self.rename_file(&p, &name) {
+                        err = Some(e);
                     }
+                } else if let RenameTarget::Doc(id) = &target
+                    && let Some(d) = self.docs.get_mut(id)
+                {
+                    d.untitled_name = name.clone();
                 }
-                if let Some(e) = err {
-                    self.message("Rename", &e);
+                match err {
+                    // Keep the window open so the name can be fixed.
+                    Some(e) => {
+                        self.message("Rename", &e);
+                        self.dialogs.rename = Some((target, name));
+                    }
+                    None => self.dialogs.rename = None,
                 }
-                self.dialogs.rename = None;
             } else {
-                self.dialogs.rename = open.then_some((id, name));
+                self.dialogs.rename = open.then_some((target, name));
             }
         }
 
@@ -1779,6 +1821,27 @@ impl App {
                 )
             }
             Prompt::Message { title, text } => (title.clone(), text.clone(), vec![("OK", 1)]),
+            Prompt::DeleteFile(p) => {
+                let open = self.find_open(p).is_some_and(|(_, id)| {
+                    self.docs
+                        .get(&id)
+                        .is_some_and(crate::document::Document::is_dirty)
+                });
+                (
+                    "Delete File".into(),
+                    format!(
+                        "{} \"{}\"?{}",
+                        crate::app::TRASH_LABEL,
+                        p.display(),
+                        if open {
+                            "\n\nIts tab has unsaved changes, which will be lost."
+                        } else {
+                            ""
+                        }
+                    ),
+                    vec![(crate::app::TRASH_LABEL, 1), ("Cancel", 0)],
+                )
+            }
         };
         egui::Modal::new(egui::Id::unique("prompt")).show(ctx, |ui| {
             ui.set_max_width(460.0);
@@ -1812,6 +1875,13 @@ impl App {
                 Prompt::Reload(id) => self.answer_reload(id, a == 1),
                 Prompt::Deleted(id) => self.answer_deleted(id, a == 1),
                 Prompt::Message { .. } => {}
+                Prompt::DeleteFile(p) => {
+                    if a == 1
+                        && let Err(e) = self.trash_file(&p)
+                    {
+                        self.message("Delete File", &e);
+                    }
+                }
             }
         }
     }

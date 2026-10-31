@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use egui::{Color32, CornerRadius, RichText, Sense, Ui, text::LayoutJob};
 
-use crate::app::App;
+use crate::app::{App, FileAction, RenameTarget, TRASH_LABEL};
 use crate::commands::Command;
 use crate::document::{EditKind, Selection};
 use crate::function_list::FoundItem;
@@ -40,6 +40,45 @@ pub struct JsonTreeState {
     pub copy_value: Option<(usize, usize)>,
 }
 
+/// A file operation picked from [`file_ops_menu`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FileOp {
+    Duplicate,
+    Rename,
+    Delete,
+}
+
+impl FileOp {
+    /// Action name for the All Open Documents window.
+    pub fn key(self) -> &'static str {
+        match self {
+            FileOp::Duplicate => "duplicate",
+            FileOp::Rename => "rename",
+            FileOp::Delete => "delete",
+        }
+    }
+}
+
+/// Duplicate / Rename / Move to Trash for one file. `path` is `None` for a
+/// document never saved, which can only be renamed.
+pub fn file_ops_menu(ui: &mut Ui, path: Option<&Path>) -> Option<FileOp> {
+    let mut op = None;
+    let on_disk = path.is_some_and(Path::exists);
+    if on_disk && ui.button("Duplicate").clicked() {
+        op = Some(FileOp::Duplicate);
+    }
+    if ui.button("Rename...").clicked() {
+        op = Some(FileOp::Rename);
+    }
+    if on_disk && ui.button(format!("{TRASH_LABEL}...")).clicked() {
+        op = Some(FileOp::Delete);
+    }
+    if op.is_some() {
+        ui.close();
+    }
+    op
+}
+
 const ASCII_NAMES: [&str; 33] = [
     "NUL", "SOH", "STX", "ETX", "EOT", "ENQ", "ACK", "BEL", "BS", "TAB", "LF", "VT", "FF", "CR",
     "SO", "SI", "DLE", "DC1", "DC2", "DC3", "DC4", "NAK", "SYN", "ETB", "CAN", "EM", "SUB", "ESC",
@@ -47,6 +86,20 @@ const ASCII_NAMES: [&str; 33] = [
 ];
 
 impl App {
+    /// Runs a [`FileOp`] (by its key) on an open document.
+    pub fn doc_file_op(&mut self, id: DocId, key: &str) {
+        let Some(d) = self.docs.get(&id) else { return };
+        let path = d.path.clone().filter(|p| p.exists());
+        match (key, path) {
+            ("rename", _) => {
+                self.dialogs.rename = Some((RenameTarget::Doc(id), d.display_name()));
+            }
+            ("duplicate", Some(p)) => self.file_action(FileAction::Duplicate(p)),
+            ("delete", Some(p)) => self.file_action(FileAction::Delete(p)),
+            _ => {}
+        }
+    }
+
     pub fn results_panel(&mut self, ui: &mut Ui) {
         let mut goto: Option<(usize, usize)> = None;
         let mut close = false;
@@ -382,6 +435,7 @@ impl App {
                 });
             });
             let mut act = None;
+            let mut file_op = None;
             let h = if both {
                 ui.available_height() * 0.4
             } else {
@@ -405,6 +459,11 @@ impl App {
                                     if r.clicked() {
                                         act = Some((pi, *id));
                                     }
+                                    r.context_menu(|ui| {
+                                        if let Some(op) = file_ops_menu(ui, d.path.as_deref()) {
+                                            file_op = Some((*id, op));
+                                        }
+                                    });
                                     let ext = d
                                         .display_name()
                                         .rsplit_once('.')
@@ -419,12 +478,15 @@ impl App {
             if let Some((p, id)) = act {
                 self.activate(p, id);
             }
+            if let Some((id, op)) = file_op {
+                self.doc_file_op(id, op.key());
+            }
             if both {
                 ui.separator();
             }
         }
         if self.settings.show_folder_tree {
-            let mut open_file = None;
+            let mut file_act = None;
             let mut remove = None;
             ui.horizontal(|ui| {
                 ui.strong("Workspace");
@@ -452,7 +514,7 @@ impl App {
                             egui::CollapsingHeader::new(RichText::new(name.to_string()).strong())
                                 .id_salt(("root", root))
                                 .default_open(true)
-                                .show(ui, |ui| self.dir_tree(ui, &p, 0, &mut open_file));
+                                .show(ui, |ui| self.dir_tree(ui, &p, 0, &mut file_act));
                         r.header_response.context_menu(|ui| {
                             if ui.button("Remove").clicked() {
                                 remove = Some(i);
@@ -481,13 +543,13 @@ impl App {
             if let Some(i) = remove {
                 self.settings.workspace_folders.remove(i);
             }
-            if let Some(f) = open_file {
-                self.open_path(&f, self.focused);
+            if let Some(a) = file_act {
+                self.file_action(a);
             }
         }
     }
 
-    fn dir_tree(&self, ui: &mut Ui, dir: &Path, depth: usize, open_file: &mut Option<PathBuf>) {
+    fn dir_tree(&self, ui: &mut Ui, dir: &Path, depth: usize, act: &mut Option<FileAction>) {
         if depth > 24 {
             return;
         }
@@ -511,13 +573,45 @@ impl App {
                 egui::CollapsingHeader::new(format!("{name}/"))
                     .id_salt(&path)
                     .default_open(false)
-                    .show(ui, |ui| self.dir_tree(ui, &path, depth + 1, open_file));
+                    .show(ui, |ui| self.dir_tree(ui, &path, depth + 1, act));
             } else {
-                let r = ui.add(egui::Label::new(format!("   {name}")).sense(Sense::click()));
-                if r.double_clicked() {
-                    *open_file = Some(path.clone());
+                let selected = self.workspace_selected.as_ref() == Some(&path);
+                let r = ui
+                    .selectable_label(selected, format!("   {name}"))
+                    .on_hover_text(path.display().to_string());
+                if r.clicked() || r.secondary_clicked() {
+                    *act = Some(FileAction::Select(path.clone()));
                 }
-                r.on_hover_text(path.display().to_string());
+                if r.double_clicked() {
+                    *act = Some(FileAction::Open(path.clone()));
+                }
+                r.context_menu(|ui| {
+                    if ui.button("Open").clicked() {
+                        *act = Some(FileAction::Open(path.clone()));
+                        ui.close();
+                    }
+                    ui.separator();
+                    match file_ops_menu(ui, Some(&path)) {
+                        Some(FileOp::Duplicate) => *act = Some(FileAction::Duplicate(path.clone())),
+                        Some(FileOp::Rename) => *act = Some(FileAction::Rename(path.clone())),
+                        Some(FileOp::Delete) => *act = Some(FileAction::Delete(path.clone())),
+                        None => {}
+                    }
+                    ui.separator();
+                    let reveal = if cfg!(target_os = "macos") {
+                        "Reveal in Finder"
+                    } else {
+                        "Show in Explorer"
+                    };
+                    if ui.button(reveal).clicked() {
+                        *act = Some(FileAction::Reveal(path.clone()));
+                        ui.close();
+                    }
+                    if ui.button("Copy Path").clicked() {
+                        *act = Some(FileAction::CopyPath(path.clone()));
+                        ui.close();
+                    }
+                });
             }
         }
     }

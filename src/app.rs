@@ -113,10 +113,72 @@ pub struct IncrementalState {
 
 /// A queued confirmation that needs the user's answer.
 pub enum Prompt {
-    SaveBeforeClose { doc: DocId, then_exit: bool },
+    SaveBeforeClose {
+        doc: DocId,
+        then_exit: bool,
+    },
     Reload(DocId),
     Deleted(DocId),
-    Message { title: String, text: String },
+    Message {
+        title: String,
+        text: String,
+    },
+    /// Confirm moving a file to the Trash.
+    DeleteFile(PathBuf),
+}
+
+/// What the Rename window renames.
+#[derive(Clone, Debug, PartialEq)]
+pub enum RenameTarget {
+    /// An open document: renames its file, or just the tab if never saved.
+    Doc(DocId),
+    /// A file on disk (from the workspace).
+    File(PathBuf),
+}
+
+/// Something to do to a file on disk, from the workspace, the document list
+/// or All Open Documents.
+#[derive(Clone, Debug, PartialEq)]
+pub enum FileAction {
+    Select(PathBuf),
+    Open(PathBuf),
+    Duplicate(PathBuf),
+    Rename(PathBuf),
+    /// Asks first, then moves it to the Trash.
+    Delete(PathBuf),
+    Reveal(PathBuf),
+    CopyPath(PathBuf),
+}
+
+/// The menu label for deleting a file (it goes to the Trash / Recycle Bin).
+pub const TRASH_LABEL: &str = if cfg!(windows) {
+    "Move to Recycle Bin"
+} else {
+    "Move to Trash"
+};
+
+/// Where a duplicate of `path` goes: `name copy.ext`, then `name copy 2.ext`
+/// and so on, skipping names that `exists` says are taken.
+pub fn copy_name(path: &Path, exists: impl Fn(&Path) -> bool) -> PathBuf {
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let ext = path
+        .extension()
+        .map(|e| format!(".{}", e.to_string_lossy()))
+        .unwrap_or_default();
+    (1..)
+        .map(|n| {
+            let suffix = if n == 1 {
+                " copy".to_string()
+            } else {
+                format!(" copy {n}")
+            };
+            path.with_file_name(format!("{stem}{suffix}{ext}"))
+        })
+        .find(|p| !exists(p))
+        .unwrap_or_else(|| path.to_path_buf())
 }
 
 /// Documents larger than this (chars) are backed up at most every
@@ -155,7 +217,7 @@ pub struct Dialogs {
     pub windows: bool,
     pub windows_selected: Option<DocId>,
     pub char_range: Option<crate::dialogs::CharRangeDialog>,
-    pub rename: Option<(DocId, String)>,
+    pub rename: Option<(RenameTarget, String)>,
     /// Section shown in the Settings window.
     pub pref_tab: usize,
     /// Keyboard Shortcuts rows (name, menu path, keys), built when shown.
@@ -230,6 +292,8 @@ pub struct App {
     pub exit_requested: bool,
     pub allow_close: bool,
     pub tree_expanded: HashSet<PathBuf>,
+    /// The file highlighted in the workspace tree.
+    pub workspace_selected: Option<PathBuf>,
     pub pending_goto: Option<(DocId, usize, usize)>,
     /// Contents of the toolbar's "Go to line" box.
     pub goto_line_text: String,
@@ -359,6 +423,7 @@ impl App {
             exit_requested: false,
             allow_close: false,
             tree_expanded: HashSet::new(),
+            workspace_selected: None,
             pending_goto: None,
             goto_line_text: String::new(),
             menu_search: crate::ui::MenuSearch::default(),
@@ -604,6 +669,103 @@ impl App {
         self.persisted
             .recent_files
             .truncate(self.settings.recent_max.max(1));
+    }
+
+    /// Runs a workspace / document list file action.
+    pub fn file_action(&mut self, a: FileAction) {
+        match a {
+            FileAction::Select(p) => self.workspace_selected = Some(p),
+            FileAction::Open(p) => {
+                self.open_path(&p, self.focused);
+            }
+            FileAction::Duplicate(p) => match self.duplicate_file(&p) {
+                Ok(copy) => {
+                    self.workspace_selected = Some(copy.clone());
+                    self.open_path(&copy, self.focused);
+                }
+                Err(e) => self.message("Duplicate", &e),
+            },
+            FileAction::Rename(p) => {
+                let name = p
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                self.dialogs.rename = Some((RenameTarget::File(p), name));
+            }
+            FileAction::Delete(p) => self.prompts.push(Prompt::DeleteFile(p)),
+            FileAction::Reveal(p) => crate::platform::reveal_in_file_manager(&p),
+            FileAction::CopyPath(p) => self.clip_set(&p.display().to_string()),
+        }
+    }
+
+    /// Copies a file to `name copy.ext` beside it; returns the copy.
+    pub fn duplicate_file(&mut self, p: &Path) -> Result<PathBuf, String> {
+        if !p.is_file() {
+            return Err(format!("\"{}\" isn't a file.", p.display()));
+        }
+        let copy = copy_name(p, Path::exists);
+        std::fs::copy(p, &copy).map_err(|e| format!("{}: {e}", copy.display()))?;
+        Ok(copy)
+    }
+
+    /// Renames a file in place (same folder), updating any tab showing it.
+    pub fn rename_file(&mut self, p: &Path, name: &str) -> Result<PathBuf, String> {
+        let name = name.trim();
+        if name.is_empty() || name.contains(['/', '\\']) || name == "." || name == ".." {
+            return Err(format!("\"{name}\" isn't a valid file name."));
+        }
+        let np = p.with_file_name(name);
+        if np == p {
+            return Ok(np);
+        }
+        // `fs::rename` would silently replace it. (A case-only change on a
+        // case-insensitive disk finds the file itself, which is fine.)
+        let same_file = std::fs::canonicalize(&np).ok() == std::fs::canonicalize(p).ok();
+        if np.exists() && !same_file {
+            return Err(format!("\"{name}\" already exists."));
+        }
+        let open = self.find_open(p).map(|(_, id)| id);
+        std::fs::rename(p, &np).map_err(|e| e.to_string())?;
+        if let Some(id) = open
+            && let Some(d) = self.docs.get_mut(&id)
+        {
+            let old_lang = self.langs.detect(&d.display_name(), &d.line_text(0));
+            d.path = Some(np.clone());
+            d.mtime = std::fs::metadata(&np).and_then(|m| m.modified()).ok();
+            // Follow the new extension unless the language was picked by hand.
+            if d.lang == old_lang || d.lang == self.langs.normal() {
+                let lang = self.langs.detect(&d.display_name(), &d.line_text(0));
+                d.set_language(lang, &self.langs);
+            }
+        }
+        if self.workspace_selected.as_deref() == Some(p) {
+            self.workspace_selected = Some(np.clone());
+        }
+        Ok(np)
+    }
+
+    /// Moves a file to the Trash and closes its tab (without asking to save:
+    /// the user just confirmed deleting it).
+    pub fn trash_file(&mut self, p: &Path) -> Result<(), String> {
+        let open = self.find_open(p).map(|(_, id)| id);
+        #[cfg(target_os = "macos")]
+        let ctx = {
+            use trash::macos::{DeleteMethod, TrashContextExtMacos};
+            let mut ctx = trash::TrashContext::default();
+            // The Finder method needs automation permission and plays a sound.
+            ctx.set_delete_method(DeleteMethod::NsFileManager);
+            ctx
+        };
+        #[cfg(not(target_os = "macos"))]
+        let ctx = trash::TrashContext::default();
+        ctx.delete(p).map_err(|e| e.to_string())?;
+        if let Some(id) = open {
+            self.force_remove(id);
+        }
+        if self.workspace_selected.as_deref() == Some(p) {
+            self.workspace_selected = None;
+        }
+        Ok(())
     }
 
     pub fn add_workspace_folder(&mut self, p: PathBuf) {
@@ -1751,7 +1913,7 @@ impl App {
             }
             Command::Rename => {
                 if let Some(d) = self.active_doc() {
-                    self.dialogs.rename = Some((d.id, d.display_name()));
+                    self.dialogs.rename = Some((RenameTarget::Doc(d.id), d.display_name()));
                 }
             }
             Command::Close => {

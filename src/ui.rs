@@ -2621,6 +2621,178 @@ mod bench {
     /// "Open Folder in Workspace" adds a saved file's folder (unsaved
     /// changes or not) and shows the panel; untitled tabs do nothing.
     #[test]
+    fn duplicate_names_count_up() {
+        use crate::app::copy_name;
+        use std::path::{Path, PathBuf};
+        let p = Path::new("/w/notes.txt");
+        assert_eq!(copy_name(p, |_| false), PathBuf::from("/w/notes copy.txt"));
+        let taken = [
+            PathBuf::from("/w/notes copy.txt"),
+            PathBuf::from("/w/notes copy 2.txt"),
+        ];
+        assert_eq!(
+            copy_name(p, |q| taken.iter().any(|t| t == q)),
+            PathBuf::from("/w/notes copy 3.txt")
+        );
+        assert_eq!(
+            copy_name(Path::new("/w/Makefile"), |_| false),
+            PathBuf::from("/w/Makefile copy")
+        );
+    }
+
+    #[test]
+    fn duplicate_rename_and_delete_files() {
+        use crate::app::{FileAction, Prompt, RenameTarget};
+        let dir = std::env::temp_dir().join("superfastnotepad-fileops-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("notes.txt");
+        std::fs::write(&file, "fn main() {}\n").unwrap();
+        std::fs::write(dir.join("taken.txt"), "").unwrap();
+        let _config = use_config_dir(dir.join("cfg"));
+        let mut app = App::new(StartupArgs {
+            files: vec![file.display().to_string()],
+            line: None,
+            column: None,
+            lang: None,
+            no_session: true,
+            read_only: false,
+            always_on_top: false,
+            take: None,
+        });
+        let id = app.active_id().unwrap();
+
+        // Duplicate: a copy beside it, opened and selected.
+        app.file_action(FileAction::Duplicate(file.clone()));
+        let copy = dir.join("notes copy.txt");
+        assert_eq!(std::fs::read_to_string(&copy).unwrap(), "fn main() {}\n");
+        assert_eq!(app.workspace_selected.as_ref(), Some(&copy));
+        let copy_id = app.active_id().unwrap();
+        assert_ne!(copy_id, id);
+        assert_eq!(app.docs[&copy_id].path.as_ref(), Some(&copy));
+
+        // Rename the open file: its tab follows, and so does the language.
+        app.file_action(FileAction::Rename(file.clone()));
+        assert_eq!(
+            app.dialogs.rename,
+            Some((RenameTarget::File(file.clone()), "notes.txt".into()))
+        );
+        let renamed = app.rename_file(&file, "main.rs").unwrap();
+        assert!(!file.exists() && renamed.exists());
+        assert_eq!(app.docs[&id].path.as_ref(), Some(&renamed));
+        assert_eq!(
+            app.langs.langs[app.docs[&id].lang].name,
+            app.langs.langs[app.langs.detect("main.rs", "")].name
+        );
+        // Never replaces another file, and rejects paths.
+        assert!(app.rename_file(&renamed, "taken.txt").is_err());
+        assert!(app.rename_file(&renamed, "../x.rs").is_err());
+        assert!(app.rename_file(&renamed, "  ").is_err());
+        assert!(renamed.exists());
+
+        // Delete asks first.
+        app.file_action(FileAction::Delete(copy.clone()));
+        assert!(matches!(app.prompts.last(), Some(Prompt::DeleteFile(p)) if *p == copy));
+        assert!(copy.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Moves a temporary file to the real Trash:
+    /// `cargo test trash_closes_the_tab -- --ignored`
+    #[test]
+    #[ignore = "uses the system Trash"]
+    fn trash_closes_the_tab() {
+        let dir = std::env::temp_dir().join("superfastnotepad-trash-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("superfastnotepad trash test.txt");
+        std::fs::write(&file, "bye\n").unwrap();
+        let _config = use_config_dir(dir.join("cfg"));
+        let mut app = App::new(StartupArgs {
+            files: vec![file.display().to_string()],
+            line: None,
+            column: None,
+            lang: None,
+            no_session: true,
+            read_only: false,
+            always_on_top: false,
+            take: None,
+        });
+        let id = app.active_id().unwrap();
+        app.trash_file(&file).unwrap();
+        assert!(!file.exists());
+        assert!(!app.docs.contains_key(&id));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn file_ops_menu_items() {
+        use crate::panels::{FileOp, file_ops_menu};
+        let saved = std::env::temp_dir().join("superfastnotepad-fileops-menu.txt");
+        std::fs::write(&saved, "").unwrap();
+        // Draws the menu (in place, not in a popup) and clicks button `n`.
+        let click = |path: Option<&std::path::Path>, n: Option<usize>| {
+            let ctx = egui::Context::default();
+            crate::setup_fonts(&ctx).unwrap();
+            let mut got = None;
+            let mut buttons = Vec::new();
+            for (i, pressed) in [None, Some(true), Some(false)].into_iter().enumerate() {
+                let events = match (pressed, n.and_then(|n| buttons.get(n))) {
+                    (Some(pressed), Some(r)) => {
+                        let r: &Rect = r;
+                        vec![
+                            Event::PointerMoved(r.center()),
+                            Event::PointerButton {
+                                pos: r.center(),
+                                button: egui::PointerButton::Primary,
+                                pressed,
+                                modifiers: egui::Modifiers::NONE,
+                            },
+                        ]
+                    }
+                    _ => Vec::new(),
+                };
+                let input = RawInput {
+                    screen_rect: Some(Rect::from_min_size(
+                        pos2(0.0, 0.0),
+                        egui::vec2(800.0, 600.0),
+                    )),
+                    time: Some(i as f64 * 0.1),
+                    events,
+                    ..Default::default()
+                };
+                let _ = ctx.run_ui(input, |ui| {
+                    if let Some(op) = file_ops_menu(ui, path) {
+                        got = Some(op);
+                    }
+                });
+                buttons = ctx.viewport(|v| {
+                    let w = &v.prev_pass.widgets;
+                    let mut r: Vec<Rect> = w
+                        .layer_ids()
+                        .flat_map(|l| {
+                            w.get_layer(l)
+                                .filter(|x| x.sense.senses_click() && x.rect.height() < 40.0)
+                                .map(|x| x.rect)
+                                .collect::<Vec<_>>()
+                        })
+                        .collect();
+                    r.sort_by(|a, b| a.min.y.total_cmp(&b.min.y));
+                    r
+                });
+            }
+            (buttons.len(), got)
+        };
+        assert_eq!(click(Some(&saved), None).0, 3, "duplicate, rename, delete");
+        assert_eq!(click(None, None).0, 1, "unsaved: rename only");
+        assert_eq!(click(Some(&saved), Some(0)).1, Some(FileOp::Duplicate));
+        assert_eq!(click(Some(&saved), Some(1)).1, Some(FileOp::Rename));
+        assert_eq!(click(Some(&saved), Some(2)).1, Some(FileOp::Delete));
+        assert_eq!(click(None, Some(0)).1, Some(FileOp::Rename));
+        let _ = std::fs::remove_file(&saved);
+    }
+
+    #[test]
     fn open_file_folder_in_workspace() {
         let dir = std::env::temp_dir().join("superfastnotepad-ws-test");
         let _ = std::fs::remove_dir_all(&dir);
