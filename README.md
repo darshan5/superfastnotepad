@@ -3,6 +3,8 @@
 A fast text and source-code editor written in **pure Rust**. Runs natively on **Windows**
 (x86_64) and **macOS** (Apple Silicon and Intel), and is drawn on the GPU for smooth scrolling.
 
+![superfastnotepad on macOS](docs/images/screenshot.png)
+
 Language definitions, colour themes and Function List rules are plain JSON files in `assets/`,
 embedded in the binary at build time.
 
