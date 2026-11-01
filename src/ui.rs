@@ -49,10 +49,12 @@ pub const TAB_COLORS: [Color32; 5] = [
 
 /// The right-click menu of a tab. `compare` is the active tab when this one
 /// isn't it. `out(cmd, true)` runs a command on this tab; `false` as is.
+/// `compare` is the tab being edited (its id and name) when it isn't `d`,
+/// offering to compare the two.
 fn tab_context_menu(
     ui: &mut Ui,
     d: &Document,
-    compare: Option<crate::document::DocId>,
+    compare: Option<(crate::document::DocId, &str)>,
     out: &mut dyn FnMut(Command, bool),
 ) {
     // Shared (not `&mut`) so the submenus can use it too.
@@ -63,6 +65,17 @@ fn tab_context_menu(
             ui.close();
         }
     };
+    if let Some((cur, name)) = compare {
+        if ui
+            .button(gutter(false, &format!("Compare with \"{name}\"")))
+            .on_hover_text("Compare the tab you're editing with this one, side by side")
+            .clicked()
+        {
+            *picked.borrow_mut() = Some((Command::CompareWith(cur, d.id), false));
+            ui.close();
+        }
+        ui.separator();
+    }
     item(ui, false, "Close", Command::Close);
     item(ui, false, "Close All Tabs", Command::CloseAll);
     item(ui, false, "Close All but This", Command::CloseAllButCurrent);
@@ -100,14 +113,6 @@ fn tab_context_menu(
         });
     }
     ui.separator();
-    if let Some(cur) = compare
-        && ui
-            .button(gutter(false, "Compare with Active Tab"))
-            .clicked()
-    {
-        *picked.borrow_mut() = Some((Command::CompareWith(cur, d.id), false));
-        ui.close();
-    }
     item(ui, false, "Move to Other View", Command::MoveToOtherView);
     item(ui, false, "Clone to Other View", Command::CloneToOtherView);
     item(ui, false, "Move to New Window", Command::MoveToNewWindow);
@@ -1808,6 +1813,11 @@ impl App {
     fn tab_bar(&mut self, ui: &mut Ui, pane: usize, out: &mut Vec<Command>) {
         let tabs = self.panes[pane].tabs.clone();
         let active = self.panes[pane].active;
+        // The tab being edited (in whichever view has focus), offered for
+        // comparing with any other tab.
+        let editing = self
+            .active_id()
+            .and_then(|id| self.docs.get(&id).map(|d| (id, d.display_name())));
         let focused = self.focused == pane;
         let accent = self.globals.active_tab_indicator;
         let mut activate: Option<usize> = None;
@@ -2021,9 +2031,10 @@ impl App {
                                     let path = d.full_path_or_name();
                                     let resp = resp.on_hover_text(path);
                                     resp.context_menu(|ui| {
-                                        let compare = (i != active)
-                                            .then(|| tabs.get(active).copied())
-                                            .flatten();
+                                        let compare = editing
+                                            .as_ref()
+                                            .filter(|(id, _)| *id != d.id)
+                                            .map(|(id, name)| (*id, name.as_str()));
                                         tab_context_menu(ui, d, compare, &mut |cmd, this_tab| {
                                             ctx_cmds
                                                 .push((if this_tab { i } else { usize::MAX }, cmd));
@@ -3016,89 +3027,90 @@ mod bench {
         // Opens the menu on a button, then clicks the item at `path`
         // (an index, or a submenu index then an item index) and returns
         // what the menu sent.
-        let click = |doc: &Document, compare: Option<u64>, path: &[usize]| -> Vec<(C, bool)> {
-            let ctx = egui::Context::default();
-            crate::setup_fonts(&ctx).unwrap();
-            let mut got = Vec::new();
-            let mut t = 0.0;
-            let mut frame = |events: Vec<Event>, got: &mut Vec<(C, bool)>| {
-                t += 0.1;
-                let input = RawInput {
-                    screen_rect: Some(Rect::from_min_size(
-                        pos2(0.0, 0.0),
-                        egui::vec2(1200.0, 900.0),
-                    )),
-                    time: Some(t),
-                    events,
-                    ..Default::default()
-                };
-                let _ = ctx.run_ui(input, |ui| {
-                    let r = ui.button("tab");
-                    r.context_menu(|ui| {
-                        super::tab_context_menu(ui, doc, compare, &mut |c, this| {
-                            got.push((c, this));
+        let click =
+            |doc: &Document, compare: Option<(u64, &str)>, path: &[usize]| -> Vec<(C, bool)> {
+                let ctx = egui::Context::default();
+                crate::setup_fonts(&ctx).unwrap();
+                let mut got = Vec::new();
+                let mut t = 0.0;
+                let mut frame = |events: Vec<Event>, got: &mut Vec<(C, bool)>| {
+                    t += 0.1;
+                    let input = RawInput {
+                        screen_rect: Some(Rect::from_min_size(
+                            pos2(0.0, 0.0),
+                            egui::vec2(1200.0, 900.0),
+                        )),
+                        time: Some(t),
+                        events,
+                        ..Default::default()
+                    };
+                    let _ = ctx.run_ui(input, |ui| {
+                        let r = ui.button("tab");
+                        r.context_menu(|ui| {
+                            super::tab_context_menu(ui, doc, compare, &mut |c, this| {
+                                got.push((c, this));
+                            });
                         });
                     });
-                });
-            };
-            let btn = |pos, button, pressed| Event::PointerButton {
-                pos,
-                button,
-                pressed,
-                modifiers: egui::Modifiers::NONE,
-            };
-            // Menu items in the topmost popup layers, top to bottom.
-            let items = |ctx: &egui::Context, right_of: f32| -> Vec<Rect> {
-                ctx.viewport(|v| {
-                    let w = &v.prev_pass.widgets;
-                    let mut r: Vec<Rect> = w
-                        .layer_ids()
-                        .filter(|l| l.order == egui::Order::Foreground)
-                        .flat_map(|l| {
-                            w.get_layer(l)
-                                .filter(|x| x.sense.senses_click() && x.rect.height() < 40.0)
-                                .map(|x| x.rect)
-                                .collect::<Vec<_>>()
-                        })
-                        .filter(|r| r.min.x > right_of)
-                        .collect();
-                    r.sort_by(|a, b| a.min.y.total_cmp(&b.min.y));
-                    r
-                })
-            };
-            let at = pos2(20.0, 12.0);
-            frame(vec![Event::PointerMoved(at)], &mut got);
-            frame(
-                vec![btn(at, egui::PointerButton::Secondary, true)],
-                &mut got,
-            );
-            frame(
-                vec![btn(at, egui::PointerButton::Secondary, false)],
-                &mut got,
-            );
-            frame(vec![], &mut got);
-            let top = items(&ctx, 0.0);
-            let mut target = top[path[0]];
-            if let Some(&j) = path.get(1) {
-                // Hover the submenu, then move right into it.
-                frame(vec![Event::PointerMoved(target.center())], &mut got);
-                frame(vec![], &mut got);
-                frame(vec![], &mut got);
-                let sub = items(&ctx, target.right() - 4.0);
-                let row = target.center().y;
-                target = sub[j];
+                };
+                let btn = |pos, button, pressed| Event::PointerButton {
+                    pos,
+                    button,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                };
+                // Menu items in the topmost popup layers, top to bottom.
+                let items = |ctx: &egui::Context, right_of: f32| -> Vec<Rect> {
+                    ctx.viewport(|v| {
+                        let w = &v.prev_pass.widgets;
+                        let mut r: Vec<Rect> = w
+                            .layer_ids()
+                            .filter(|l| l.order == egui::Order::Foreground)
+                            .flat_map(|l| {
+                                w.get_layer(l)
+                                    .filter(|x| x.sense.senses_click() && x.rect.height() < 40.0)
+                                    .map(|x| x.rect)
+                                    .collect::<Vec<_>>()
+                            })
+                            .filter(|r| r.min.x > right_of)
+                            .collect();
+                        r.sort_by(|a, b| a.min.y.total_cmp(&b.min.y));
+                        r
+                    })
+                };
+                let at = pos2(20.0, 12.0);
+                frame(vec![Event::PointerMoved(at)], &mut got);
                 frame(
-                    vec![Event::PointerMoved(pos2(target.left() + 4.0, row))],
+                    vec![btn(at, egui::PointerButton::Secondary, true)],
                     &mut got,
                 );
-            }
-            let c = target.center();
-            frame(vec![Event::PointerMoved(c)], &mut got);
-            frame(vec![btn(c, egui::PointerButton::Primary, true)], &mut got);
-            frame(vec![btn(c, egui::PointerButton::Primary, false)], &mut got);
-            frame(vec![], &mut got);
-            got
-        };
+                frame(
+                    vec![btn(at, egui::PointerButton::Secondary, false)],
+                    &mut got,
+                );
+                frame(vec![], &mut got);
+                let top = items(&ctx, 0.0);
+                let mut target = top[path[0]];
+                if let Some(&j) = path.get(1) {
+                    // Hover the submenu, then move right into it.
+                    frame(vec![Event::PointerMoved(target.center())], &mut got);
+                    frame(vec![], &mut got);
+                    frame(vec![], &mut got);
+                    let sub = items(&ctx, target.right() - 4.0);
+                    let row = target.center().y;
+                    target = sub[j];
+                    frame(
+                        vec![Event::PointerMoved(pos2(target.left() + 4.0, row))],
+                        &mut got,
+                    );
+                }
+                let c = target.center();
+                frame(vec![Event::PointerMoved(c)], &mut got);
+                frame(vec![btn(c, egui::PointerButton::Primary, true)], &mut got);
+                frame(vec![btn(c, egui::PointerButton::Primary, false)], &mut got);
+                frame(vec![], &mut got);
+                got
+            };
 
         let saved_items: Vec<(Vec<usize>, C)> = vec![
             (vec![0], C::Close),
@@ -3133,15 +3145,115 @@ mod bench {
                 "{path:?} {want:?}"
             );
         }
-        // Untitled: no file items; Compare uses the two tabs as given.
+        // Untitled: no file items.
         assert_eq!(
             click(&untitled, None, &[7]),
             vec![(C::MoveToOtherView, true)]
         );
-        assert_eq!(
-            click(&untitled, Some(3), &[7]),
-            vec![(C::CompareWith(3, 8), false)]
-        );
+        // Another tab is being edited: comparing with it comes first, and
+        // everything else moves down one.
+        for doc in [&untitled, &saved] {
+            assert_eq!(
+                click(doc, Some((3, "b.txt")), &[0]),
+                vec![(C::CompareWith(3, doc.id), false)]
+            );
+            assert_eq!(click(doc, Some((3, "b.txt")), &[1]), vec![(C::Close, true)]);
+        }
+    }
+
+    /// Right-clicking a tab in the other view offers to compare it with the
+    /// tab being edited, even though it's the active tab of its own view.
+    #[test]
+    fn compare_from_a_tab_in_the_other_view() {
+        let dir = std::env::temp_dir().join("superfastnotepad-tab-compare-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _config = use_config_dir(dir.join("cfg"));
+        let ctx = egui::Context::default();
+        crate::setup_fonts(&ctx).unwrap();
+        let mut app = App::new(StartupArgs {
+            files: Vec::new(),
+            line: None,
+            column: None,
+            lang: None,
+            no_session: true,
+            read_only: false,
+            always_on_top: false,
+            take: None,
+        });
+        let a = app.active_id().unwrap();
+        app.run(crate::commands::Command::New);
+        let b = app.active_id().unwrap();
+        app.run(crate::commands::Command::MoveToOtherView);
+        app.activate(0, a);
+        assert_eq!((app.focused, app.panes[1].tabs.clone()), (0, vec![b]));
+        let mut t = 0.0;
+        let mut frame = |app: &mut App, events: Vec<Event>| {
+            t += 0.1;
+            let input = RawInput {
+                screen_rect: Some(Rect::from_min_size(
+                    pos2(0.0, 0.0),
+                    egui::vec2(1200.0, 800.0),
+                )),
+                time: Some(t),
+                events,
+                ..Default::default()
+            };
+            let _ = ctx.run_ui(input, |ui| app.frame(ui));
+        };
+        let click = |pos, button| {
+            [true, false].map(|pressed| Event::PointerButton {
+                pos,
+                button,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            })
+        };
+        frame(&mut app, vec![]);
+        frame(&mut app, vec![]);
+        // Tabs are the short click-and-drag widgets below the toolbar (whose
+        // search box is one too); the right view's is on the right half.
+        let toolbar_bottom = 55.0;
+        let tab = ctx.viewport(|v| {
+            let w = &v.prev_pass.widgets;
+            w.layer_ids()
+                .flat_map(|l| w.get_layer(l).cloned().collect::<Vec<_>>())
+                .filter(|x| {
+                    x.sense.senses_click()
+                        && x.sense.senses_drag()
+                        && x.rect.height() < 40.0
+                        && x.rect.min.x > 600.0
+                        && x.rect.min.y > toolbar_bottom
+                })
+                .map(|x| x.rect)
+                .min_by(|p, q| p.min.y.total_cmp(&q.min.y))
+                .unwrap()
+        });
+        let c = tab.center();
+        frame(&mut app, vec![Event::PointerMoved(c)]);
+        let [down, up] = click(c, egui::PointerButton::Secondary);
+        frame(&mut app, vec![down]);
+        frame(&mut app, vec![up]);
+        frame(&mut app, vec![]);
+        // The menu's first item.
+        let first = ctx.viewport(|v| {
+            let w = &v.prev_pass.widgets;
+            w.layer_ids()
+                .filter(|l| l.order == egui::Order::Foreground)
+                .flat_map(|l| w.get_layer(l).cloned().collect::<Vec<_>>())
+                .filter(|x| x.sense.senses_click() && x.rect.height() < 40.0)
+                .map(|x| x.rect)
+                .min_by(|p, q| p.min.y.total_cmp(&q.min.y))
+                .expect("a context menu")
+        });
+        let c = first.center();
+        frame(&mut app, vec![Event::PointerMoved(c)]);
+        let [down, up] = click(c, egui::PointerButton::Primary);
+        frame(&mut app, vec![down]);
+        frame(&mut app, vec![up]);
+        frame(&mut app, vec![]);
+        let s = app.compare.as_ref().expect("comparing");
+        assert_eq!((s.left, s.right), (a, b));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The tab menu's Copy items copy the saved file's path, name and folder.
