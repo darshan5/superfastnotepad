@@ -750,6 +750,34 @@ impl Metrics {
     }
 }
 
+/// The part of selection `ss..se` to highlight on a row showing characters
+/// `row_s..row_e`, followed by a line break of `eol` characters (0 except on
+/// a line's last row): the characters, and whether the line break is
+/// selected. `None` if the selection doesn't touch the row.
+fn selection_on_row(
+    ss: usize,
+    se: usize,
+    row_s: usize,
+    row_e: usize,
+    eol: usize,
+) -> Option<(usize, usize, bool)> {
+    // A selection starting at the next line's first character is past this
+    // row's line break, not on it.
+    let past = if eol > 0 {
+        ss >= row_e + eol
+    } else {
+        ss > row_e
+    };
+    if se < row_s || past {
+        return None;
+    }
+    Some((
+        ss.max(row_s).min(row_e),
+        se.min(row_e),
+        eol > 0 && se > row_e,
+    ))
+}
+
 fn blend(a: Color32, b: Color32, t: f32) -> Color32 {
     let l = |x: u8, y: u8| (f32::from(x) * (1.0 - t) + f32::from(y) * t) as u8;
     Color32::from_rgb(l(a.r(), b.r()), l(a.g(), b.g()), l(a.b(), b.b()))
@@ -1094,19 +1122,19 @@ pub fn show(
             };
             next - line_end_pos
         };
+        let eol = if sub + 1 == breaks.len() { eol_len } else { 0 };
         for s in &vs.sels {
             if s.is_empty() {
                 continue;
             }
-            let (ss, se) = (s.start(), s.end());
-            if se < row_s || ss > row_e + if sub + 1 == breaks.len() { eol_len } else { 0 } {
+            let Some((a, b, with_eol)) = selection_on_row(s.start(), s.end(), row_s, row_e, eol)
+            else {
                 continue;
-            }
-            let a = ss.max(row_s).min(row_e) - line_start;
-            let b = se.min(row_e) - line_start;
+            };
+            let (a, b) = (a - line_start, b - line_start);
             let mut x1 = x_of(b);
-            if se > line_end_pos && sub + 1 == breaks.len() {
-                x1 += cw; // selection includes the EOL
+            if with_eol {
+                x1 += cw;
             }
             let r = Rect::from_min_max(pos2(x_of(a), y), pos2(x1.max(x_of(a)), y + lh));
             text_painter.rect_filled(r, CornerRadius::ZERO, g.selection_bg);
@@ -2577,6 +2605,31 @@ fn handle_mouse(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selection_highlight_stops_at_line_boundaries() {
+        // "abc\ndef\n": line 0 is 0..3 with its line break at 3; line 1
+        // starts at 4.
+        let row0 = |ss, se| selection_on_row(ss, se, 0, 3, 1);
+        let row1 = |ss, se| selection_on_row(ss, se, 4, 7, 1);
+        // Dragging right from the start of line 1 leaves line 0 alone.
+        assert_eq!(row0(4, 6), None);
+        assert_eq!(row1(4, 6), Some((4, 6, false)));
+        // Starting on line 0's line break shows it selected.
+        assert_eq!(row0(3, 6), Some((3, 3, true)));
+        // Ending at the start of line 1 includes line 0's line break.
+        assert_eq!(row0(1, 4), Some((1, 3, true)));
+        assert_eq!(row1(1, 4), Some((4, 4, false)));
+        // Within line 0.
+        assert_eq!(row0(1, 2), Some((1, 2, false)));
+        // CRLF: a selection starting between \r and \n still shows it.
+        assert_eq!(selection_on_row(4, 6, 0, 3, 2), Some((3, 3, true)));
+        assert_eq!(selection_on_row(5, 7, 0, 3, 2), None);
+        // A wrapped row (no line break after it) shows a selection starting
+        // at its end as an empty span, and nothing past it.
+        assert_eq!(selection_on_row(3, 5, 0, 3, 0), Some((3, 3, false)));
+        assert_eq!(selection_on_row(4, 5, 0, 3, 0), None);
+    }
 
     fn completions(text: &str) -> Vec<String> {
         let langs = crate::langs::LangRegistry::load();
