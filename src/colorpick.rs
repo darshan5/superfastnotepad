@@ -172,9 +172,6 @@ impl ColorPicker {
         if changed {
             self.sync_hex();
         }
-        if ui.input(|i| i.key_pressed(egui::Key::Escape)) && !self.sampling {
-            action = PickerAction::Cancel;
-        }
         action
     }
 

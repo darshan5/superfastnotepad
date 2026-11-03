@@ -365,14 +365,25 @@ impl App {
                     cmds.push(cmd.clone());
                 }
             }
-            if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-                if self.find.open && !editor_focused {
+            if ctx.input(|i| i.key_pressed(egui::Key::Escape))
+                && !egui::Popup::is_any_open(&ctx)
+                && self.menu_search.popup_rect.is_none()
+                && !(editor_focused && self.editor_popup_open())
+            {
+                // Escape closes the topmost dialog, wherever the focus is.
+                if let Some(&top) = self.dialogs.layers.last() {
+                    self.dialogs.esc_layer = Some(top);
+                } else if self.find.open {
                     self.find.open = false;
                     self.request_focus_editor = true;
-                } else if self.incremental.open && !editor_focused {
+                } else if self.incremental.open {
                     self.incremental.open = false;
                     self.incremental.text.clear();
                     self.incremental_update(None);
+                    self.request_focus_editor = true;
+                } else if self.filter.open {
+                    self.filter.open = false;
+                    self.filter.query.text.clear();
                     self.request_focus_editor = true;
                 } else if self.postit {
                     self.postit = false;
@@ -450,6 +461,7 @@ impl App {
 
         self.find_dialog(ui, false);
         self.dialogs_ui(&ctx, &mut cmds);
+        self.end_dialogs(&ctx);
         self.prompts_ui(&ctx);
 
         for c in cmds {
@@ -3509,5 +3521,72 @@ mod bench {
             stats("typing frame", &mut typing);
             stats("idle frame after typing", &mut after);
         }
+    }
+
+    /// Escape closes the topmost dialog even while the editor has focus,
+    /// then the next one down.
+    #[test]
+    fn escape_closes_topmost_dialog() {
+        let dir = std::env::temp_dir().join("superfastnotepad-escape-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _config = use_config_dir(dir.join("cfg"));
+        let ctx = egui::Context::default();
+        crate::setup_fonts(&ctx).unwrap();
+        let mut app = App::new(StartupArgs {
+            files: Vec::new(),
+            line: None,
+            column: None,
+            lang: None,
+            no_session: true,
+            read_only: false,
+            always_on_top: false,
+            take: None,
+        });
+        let mut time = 0.0;
+        let mut frame = |app: &mut App, events: Vec<Event>| {
+            time += 1.0 / 60.0;
+            let input = RawInput {
+                screen_rect: Some(Rect::from_min_size(
+                    pos2(0.0, 0.0),
+                    egui::vec2(1200.0, 800.0),
+                )),
+                time: Some(time),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| app.frame(ui));
+            out.textures_delta.clear();
+        };
+        let esc = || {
+            vec![Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }]
+        };
+        app.settings.find_docked = false;
+        app.find.open = true;
+        frame(&mut app, Vec::new());
+        app.dialogs.summary = true;
+        frame(&mut app, Vec::new());
+        frame(&mut app, Vec::new());
+        app.request_focus_editor = true;
+        frame(&mut app, Vec::new());
+
+        frame(&mut app, esc());
+        assert!(!app.dialogs.summary, "topmost dialog closes first");
+        assert!(app.find.open);
+        frame(&mut app, Vec::new());
+        frame(&mut app, esc());
+        assert!(!app.find.open, "then the Find window");
+
+        // Docked Find has no window; Escape still closes it.
+        app.settings.find_docked = true;
+        app.find.open = true;
+        frame(&mut app, Vec::new());
+        frame(&mut app, esc());
+        assert!(!app.find.open);
     }
 }

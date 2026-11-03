@@ -209,6 +209,33 @@ fn history_combo(
 }
 
 impl App {
+    /// Records a dialog window shown this frame, and whether Escape closes
+    /// it (it is the topmost dialog and Escape was pressed).
+    pub fn esc_closes<R>(&mut self, shown: Option<&egui::InnerResponse<R>>) -> bool {
+        let Some(r) = shown else { return false };
+        let layer = r.response.layer_id;
+        self.dialogs.layers_now.push(layer);
+        self.dialogs.esc_layer == Some(layer)
+    }
+
+    /// Updates the stacking order of visible dialogs; call after drawing them.
+    pub fn end_dialogs(&mut self, ctx: &Context) {
+        let now = std::mem::take(&mut self.dialogs.layers_now);
+        self.dialogs.layers.retain(|l| now.contains(l));
+        for l in &now {
+            if !self.dialogs.layers.contains(l) {
+                self.dialogs.layers.push(*l);
+            }
+        }
+        if let Some(top) = ctx.top_layer_id()
+            && let Some(i) = self.dialogs.layers.iter().position(|l| *l == top)
+        {
+            let l = self.dialogs.layers.remove(i);
+            self.dialogs.layers.push(l);
+        }
+        self.dialogs.esc_layer = None;
+    }
+
     #[allow(clippy::too_many_lines)]
     /// The Find/Replace/Find in Files/Mark dialog: a floating window, or a
     /// panel docked at the bottom. Called before the editors are laid out
@@ -258,6 +285,10 @@ impl App {
                     ui.multiply_opacity(opacity);
                     self.find_body(ui, &mut actions);
                 });
+            if self.esc_closes(shown.as_ref()) {
+                open = false;
+                self.request_focus_editor = true;
+            }
             self.find.window_rect = shown.map(|r| r.response.rect);
         }
         if !open {
@@ -523,7 +554,7 @@ impl App {
                     (d.char_to_line(h) + 1, d.line_count(), h, d.len_chars())
                 })
                 .unwrap_or((1, 1, 0, 0));
-            egui::Window::new("Go to Line")
+            let shown = egui::Window::new("Go to Line")
                 .open(&mut open)
                 .collapsible(false)
                 .resizable(false)
@@ -559,6 +590,9 @@ impl App {
                         }
                     });
                 });
+            if self.esc_closes(shown.as_ref()) {
+                open = false;
+            }
             if go {
                 if let Ok(n) = value.trim().parse::<usize>() {
                     self.with_active(|d, v, _| {
@@ -585,11 +619,14 @@ impl App {
 
         if self.dialogs.preferences {
             let mut open = true;
-            egui::Window::new("Settings")
+            let shown = egui::Window::new("Settings")
                 .open(&mut open)
                 .resizable(false)
                 .collapsible(false)
                 .show(ctx, |ui| self.settings_ui(ui));
+            if self.esc_closes(shown.as_ref()) {
+                open = false;
+            }
             if !open {
                 self.dialogs.preferences = false;
                 self.dialogs.shortcut_rows = None;
@@ -601,7 +638,7 @@ impl App {
             let mut open = true;
             let mut ok = false;
             let mut cancel = false;
-            egui::Window::new("Column Editor")
+            let shown = egui::Window::new("Column Editor")
                 .open(&mut open)
                 .resizable(false)
                 .collapsible(false)
@@ -658,6 +695,9 @@ impl App {
                         }
                     });
                 });
+            if self.esc_closes(shown.as_ref()) {
+                open = false;
+            }
             if cancel {
                 open = false;
             }
@@ -758,7 +798,7 @@ impl App {
                 ]);
                 Some(rows)
             });
-            egui::Window::new("Document Summary")
+            let shown = egui::Window::new("Document Summary")
                 .open(&mut open)
                 .resizable(false)
                 .collapsible(false)
@@ -774,6 +814,9 @@ impl App {
                             }
                         });
                 });
+            if self.esc_closes(shown.as_ref()) {
+                open = false;
+            }
             if !open {
                 self.dialogs.summary = false;
             }
@@ -782,7 +825,7 @@ impl App {
         if let Some(mut h) = self.dialogs.hash.clone() {
             let mut open = true;
             let mut copy = None;
-            egui::Window::new(format!("{} Hash", h.algo.name()))
+            let shown = egui::Window::new(format!("{} Hash", h.algo.name()))
                 .open(&mut open)
                 .default_width(520.0)
                 .show(ctx, |ui| {
@@ -826,6 +869,9 @@ impl App {
                         copy = Some(h.output.clone());
                     }
                 });
+            if self.esc_closes(shown.as_ref()) {
+                open = false;
+            }
             if let Some(t) = copy {
                 self.clip_set(&t);
             }
@@ -835,7 +881,7 @@ impl App {
         if self.dialogs.windows {
             let mut open = true;
             let mut action: Option<(&str, u64)> = None;
-            egui::Window::new("All Open Documents")
+            let shown = egui::Window::new("All Open Documents")
                 .open(&mut open)
                 .default_size([640.0, 360.0])
                 .show(ctx, |ui| {
@@ -932,6 +978,9 @@ impl App {
                         }
                     });
                 });
+            if self.esc_closes(shown.as_ref()) {
+                open = false;
+            }
             if let Some((a, id)) = action {
                 let pane = self
                     .panes
@@ -956,7 +1005,7 @@ impl App {
         if let Some(mut cr) = self.dialogs.char_range.clone() {
             let mut open = true;
             let mut find = false;
-            egui::Window::new("Find Characters in Range")
+            let shown = egui::Window::new("Find Characters in Range")
                 .open(&mut open)
                 .resizable(false)
                 .show(ctx, |ui| {
@@ -979,6 +1028,9 @@ impl App {
                         ui.label(RichText::new(cr.status.clone()).weak());
                     });
                 });
+            if self.esc_closes(shown.as_ref()) {
+                open = false;
+            }
             if find {
                 let range = match cr.range {
                     0 => CharRange::NonAscii,
@@ -1037,7 +1089,7 @@ impl App {
             let mut open = true;
             let mut ok = false;
             let mut cancel = false;
-            egui::Window::new("Rename")
+            let shown = egui::Window::new("Rename")
                 .open(&mut open)
                 .resizable(false)
                 .collapsible(false)
@@ -1056,6 +1108,9 @@ impl App {
                         }
                     });
                 });
+            if self.esc_closes(shown.as_ref()) {
+                open = false;
+            }
             if cancel {
                 open = false;
             }
@@ -1097,7 +1152,7 @@ impl App {
             let mut open = true;
             let mut insert: Option<String> = None;
             let mut copy: Option<String> = None;
-            egui::Window::new("Date and Unix Time")
+            let shown = egui::Window::new("Date and Unix Time")
                 .open(&mut open)
                 .resizable(false)
                 .collapsible(false)
@@ -1241,6 +1296,9 @@ impl App {
                         }
                     }
                 });
+            if self.esc_closes(shown.as_ref()) {
+                open = false;
+            }
             if let Some(t) = copy {
                 ctx.copy_text(t);
             }
@@ -1257,11 +1315,14 @@ impl App {
         if let Some(mut generator) = self.dialogs.password.take() {
             let mut open = true;
             let mut action = crate::password::PasswordAction::None;
-            egui::Window::new("Password Generator")
+            let shown = egui::Window::new("Password Generator")
                 .open(&mut open)
                 .resizable(false)
                 .collapsible(false)
                 .show(ctx, |ui| action = generator.ui(ui));
+            if self.esc_closes(shown.as_ref()) {
+                open = false;
+            }
             match action {
                 crate::password::PasswordAction::Insert(p) => {
                     self.with_active(|d, v, _| {
@@ -1281,11 +1342,15 @@ impl App {
             let mut open = true;
             let mut action = crate::colorpick::PickerAction::None;
             picker.poll_sampler(ctx);
-            egui::Window::new("Color Picker")
+            let shown = egui::Window::new("Color Picker")
                 .open(&mut open)
                 .resizable(false)
                 .collapsible(false)
                 .show(ctx, |ui| action = picker.ui(ui));
+            // While sampling, Escape cancels the eyedropper instead.
+            if self.esc_closes(shown.as_ref()) && !picker.sampling {
+                open = false;
+            }
             match action {
                 crate::colorpick::PickerAction::Insert(hex) => {
                     self.with_active(|d, v, _| {
@@ -1843,6 +1908,15 @@ impl App {
                 )
             }
         };
+        // Escape gives the safe answer: cancel, keep, or acknowledge.
+        let esc = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+        if esc {
+            answer = Some(match prompt {
+                Prompt::SaveBeforeClose { .. } => -1,
+                Prompt::Reload(_) | Prompt::DeleteFile(_) => 0,
+                Prompt::Deleted(_) | Prompt::Message { .. } => 1,
+            });
+        }
         egui::Modal::new(egui::Id::unique("prompt")).show(ctx, |ui| {
             ui.set_max_width(460.0);
             ui.heading(title);

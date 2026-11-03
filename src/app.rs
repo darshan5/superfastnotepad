@@ -226,6 +226,12 @@ pub struct Dialogs {
     pub datetime: Option<crate::dialogs::DateTimeDialog>,
     pub color_picker: Option<crate::colorpick::ColorPicker>,
     pub password: Option<crate::password::PasswordGenerator>,
+    /// Dialog windows visible last frame, bottom to top.
+    pub layers: Vec<egui::LayerId>,
+    /// Dialog windows shown so far this frame.
+    pub layers_now: Vec<egui::LayerId>,
+    /// The dialog Escape closes this frame.
+    pub esc_layer: Option<egui::LayerId>,
 }
 
 pub struct App {
@@ -783,6 +789,14 @@ impl App {
 
     pub fn active_doc(&self) -> Option<&Document> {
         self.active_id().and_then(|id| self.docs.get(&id))
+    }
+
+    /// The active editor shows an autocomplete list or call tip (which
+    /// Escape dismisses first).
+    pub fn editor_popup_open(&self) -> bool {
+        self.active_id()
+            .and_then(|id| self.views.get(&(self.focused, id)))
+            .is_some_and(|v| v.autocomplete.is_some() || v.call_tip.is_some())
     }
 
     /// Runs `f` with the active document and its view state.
