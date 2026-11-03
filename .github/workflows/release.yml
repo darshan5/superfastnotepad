@@ -115,6 +115,20 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      # The Windows installer wraps the built .exe (NSIS runs fine on Linux).
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.tag.outputs.tag }}
+          path: src
+      - name: Build the Windows installer
+        env:
+          TAG: ${{ needs.tag.outputs.tag }}
+        run: |
+          sudo apt-get update -q && sudo apt-get install -yq nsis
+          makensis -V2 -DVERSION="${TAG#v}" \
+            -DEXE="$PWD/dist/superfastnotepad-$TAG-windows-x64.exe" \
+            -DOUTFILE="$PWD/dist/superfastnotepad-$TAG-windows-x64-setup.exe" \
+            src/installer/superfastnotepad.nsi
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.tag.outputs.tag }}
@@ -128,6 +142,6 @@ jobs:
             ## Downloads
 
             - **macOS (Apple Silicon):** `superfastnotepad-${{ needs.tag.outputs.tag }}-macos-apple-silicon.dmg`. Open it and drag `superfastnotepad.app` to Applications.
-            - **Windows (64-bit):** `superfastnotepad-${{ needs.tag.outputs.tag }}-windows-x64.exe`. Download and run it; no installer needed.
+            - **Windows (64-bit):** `superfastnotepad-${{ needs.tag.outputs.tag }}-windows-x64-setup.exe` installs it for your user (no admin needed) with a Start menu shortcut, an "Open with" entry and an uninstaller. Or download `superfastnotepad-${{ needs.tag.outputs.tag }}-windows-x64.exe` and run it as is.
 
             The builds aren't code-signed. On macOS, the first time, right-click the app and choose Open (or run `xattr -dr com.apple.quarantine /Applications/superfastnotepad.app`). On Windows, choose "More info" > "Run anyway" in the SmartScreen prompt.
