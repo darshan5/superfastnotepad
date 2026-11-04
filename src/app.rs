@@ -1205,33 +1205,64 @@ impl App {
         }
     }
 
-    /// Starts the check at startup (once, if enabled) and picks up results.
+    /// Starts the automatic check once a month (if enabled), and picks up
+    /// results.
     fn poll_updates(&mut self) {
+        use crate::update::{RETRY_SECS, check_due, current_version, is_newer, now_secs};
+        // A release found by an earlier check, until this build catches up.
+        if self.update.available.is_none()
+            && let Some((version, url)) = &self.persisted.update_available
+            && is_newer(version, current_version())
+        {
+            self.update.available = Some(crate::update::Update {
+                version: version.clone(),
+                url: url.clone(),
+            });
+        }
         // Only the main window checks (extra windows run with -nosession),
         // and never in tests.
-        if !self.update.started
+        if self.update.job.is_none()
             && self.settings.check_for_updates
             && !self.no_session
             && !cfg!(test)
             && self.egui_ctx.is_some()
         {
-            self.update.started = true;
-            self.start_update_check(false);
+            let now = now_secs();
+            if check_due(
+                self.persisted.last_update_check,
+                self.update.retry_after,
+                now,
+            ) {
+                // Until this one finishes.
+                self.update.retry_after = now + RETRY_SECS;
+                self.start_update_check(false);
+            }
         }
         let Some(rx) = &self.update.job else { return };
         let Ok(result) = rx.try_recv() else { return };
         self.update.job = None;
         let manual = std::mem::take(&mut self.update.manual);
+        if result.is_ok() {
+            self.persisted.last_update_check = now_secs();
+            self.persisted.update_available = result
+                .as_ref()
+                .ok()
+                .and_then(Option::as_ref)
+                .map(|u| (u.version.clone(), u.url.clone()));
+            if !cfg!(test) {
+                config::save_persisted(&self.persisted);
+            }
+        }
         let status = match result {
             Ok(Some(u)) => {
                 let s = format!("Version {} is available.", u.version);
                 self.update.available = Some(u);
                 s
             }
-            Ok(None) => format!(
-                "You have the latest version ({}).",
-                crate::update::current_version()
-            ),
+            Ok(None) => {
+                self.update.available = None;
+                format!("You have the latest version ({}).", current_version())
+            }
             Err(e) => e,
         };
         if manual {

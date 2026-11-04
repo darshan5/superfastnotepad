@@ -225,6 +225,11 @@ pub struct Session {
 #[serde(default)]
 pub struct Persisted {
     pub recent_files: Vec<String>,
+    /// When the last update check succeeded (Unix seconds).
+    pub last_update_check: i64,
+    /// The newest release that check found, if newer than the build that
+    /// made it (version without `v`, release page).
+    pub update_available: Option<(String, String)>,
 }
 
 pub fn config_dir() -> PathBuf {

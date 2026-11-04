@@ -1434,7 +1434,7 @@ impl App {
                 group(ui, "Updates");
                 ui.checkbox(
                     &mut s.check_for_updates,
-                    "Check for a new version when the app starts",
+                    "Check for a new version once a month",
                 );
                 let checking = self.update.job.is_some();
                 ui.horizontal(|ui| {

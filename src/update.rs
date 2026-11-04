@@ -127,11 +127,30 @@ pub fn spawn_check(done: impl FnOnce() + Send + 'static) -> Receiver<CheckResult
     rx
 }
 
+/// How often the app checks for a new release on its own.
+pub const CHECK_INTERVAL_SECS: i64 = 30 * 24 * 60 * 60;
+
+/// How long to wait before retrying a failed automatic check.
+pub const RETRY_SECS: i64 = 24 * 60 * 60;
+
+/// Seconds since the Unix epoch.
+pub fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+}
+
+/// Is an automatic check due, given when the last one succeeded?
+pub fn check_due(last_check: i64, retry_after: i64, now: i64) -> bool {
+    now >= retry_after && (now - last_check >= CHECK_INTERVAL_SECS || now < last_check)
+}
+
 /// Update checking as the app sees it.
 #[derive(Default)]
 pub struct UpdateState {
-    /// The automatic check has been started this run.
-    pub started: bool,
+    /// No automatic check before this time (Unix seconds); set after a
+    /// failed one so it isn't retried every frame.
+    pub retry_after: i64,
     pub job: Option<Receiver<CheckResult>>,
     /// A newer release, shown as "Update Available" in the File menu.
     pub available: Option<Update>,
@@ -144,6 +163,17 @@ pub struct UpdateState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn checks_once_a_month() {
+        let day = 24 * 60 * 60;
+        let now = 1_800_000_000;
+        assert!(check_due(0, 0, now), "never checked");
+        assert!(!check_due(now - 29 * day, 0, now));
+        assert!(check_due(now - 30 * day, 0, now));
+        assert!(!check_due(now - 40 * day, now + 1, now), "retry waits");
+        assert!(check_due(now + day, 0, now), "clock went back");
+    }
 
     #[test]
     fn compares_versions() {

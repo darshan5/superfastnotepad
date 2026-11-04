@@ -1473,9 +1473,11 @@ impl App {
         COLLECTING.with(|c| *c.borrow_mut() = Some(MenuCollector::default()));
         let ctx = egui::Context::default();
         let mut ignored = Vec::new();
-        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+        ctx.run_ui(egui::RawInput::default(), |ui| {
             self.menu_bar(ui, &mut ignored);
-        });
+        })
+        .textures_delta
+        .clear();
         let entries = COLLECTING
             .with(|c| c.borrow_mut().take())
             .map(|c| c.entries)
@@ -2248,7 +2250,7 @@ mod bench {
                 )),
                 ..Default::default()
             };
-            let _ = ctx.run_ui(input, |ui| app.frame(ui));
+            ctx.run_ui(input, |ui| app.frame(ui)).textures_delta.clear();
         }
         assert!(app.dialogs.datetime.is_some());
         app.settings.font_size = 47.0;
@@ -2444,7 +2446,7 @@ mod bench {
                 time: Some(time),
                 ..Default::default()
             };
-            let _ = ctx.run_ui(input, |ui| app.frame(ui));
+            ctx.run_ui(input, |ui| app.frame(ui)).textures_delta.clear();
         };
         frame(&mut app);
         app.run(crate::commands::Command::FilterLines);
@@ -2567,7 +2569,7 @@ mod bench {
     fn menu_gutter_has_the_same_width() {
         let ctx = egui::Context::default();
         crate::setup_fonts(&ctx).unwrap();
-        let _ = ctx.run_ui(RawInput::default(), |ui| {
+        ctx.run_ui(RawInput::default(), |ui| {
             let width = |text: String| {
                 let font = egui::TextStyle::Button.resolve(ui.style());
                 ui.painter()
@@ -2580,7 +2582,9 @@ mod bench {
                 let off = width(super::gutter(false, label));
                 assert!((on - off).abs() < 0.01, "{label}: {on} vs {off}");
             }
-        });
+        })
+        .textures_delta
+        .clear();
     }
 
     /// The color picker starts from a selected hex color, draws, and
@@ -2625,7 +2629,7 @@ mod bench {
                 )),
                 ..Default::default()
             };
-            let _ = ctx.run_ui(input, |ui| app.frame(ui));
+            ctx.run_ui(input, |ui| app.frame(ui)).textures_delta.clear();
         }
         assert!(app.dialogs.color_picker.is_some(), "stays open");
         // What Insert does: replace the selection with the picked color.
@@ -2784,11 +2788,13 @@ mod bench {
                     events,
                     ..Default::default()
                 };
-                let _ = ctx.run_ui(input, |ui| {
+                ctx.run_ui(input, |ui| {
                     if let Some(op) = file_ops_menu(ui, path) {
                         got = Some(op);
                     }
-                });
+                })
+                .textures_delta
+                .clear();
                 buttons = ctx.viewport(|v| {
                     let w = &v.prev_pass.widgets;
                     let mut r: Vec<Rect> = w
@@ -2938,7 +2944,7 @@ mod bench {
                 )),
                 ..Default::default()
             };
-            let _ = ctx.run_ui(input, |ui| app.frame(ui));
+            ctx.run_ui(input, |ui| app.frame(ui)).textures_delta.clear();
         };
         let top = |app: &App, pane: usize| app.views[&(pane, a)].top_row;
         frame(&mut app);
@@ -2998,7 +3004,7 @@ mod bench {
                 events,
                 ..Default::default()
             };
-            let _ = ctx.run_ui(input, |ui| app.frame(ui));
+            ctx.run_ui(input, |ui| app.frame(ui)).textures_delta.clear();
         };
         frame(&mut app, Vec::new());
         frame(&mut app, Vec::new());
@@ -3056,14 +3062,16 @@ mod bench {
                         events,
                         ..Default::default()
                     };
-                    let _ = ctx.run_ui(input, |ui| {
+                    ctx.run_ui(input, |ui| {
                         let r = ui.button("tab");
                         r.context_menu(|ui| {
                             super::tab_context_menu(ui, doc, compare, &mut |c, this| {
                                 got.push((c, this));
                             });
                         });
-                    });
+                    })
+                    .textures_delta
+                    .clear();
                 };
                 let btn = |pos, button, pressed| Event::PointerButton {
                     pos,
@@ -3210,7 +3218,7 @@ mod bench {
                 events,
                 ..Default::default()
             };
-            let _ = ctx.run_ui(input, |ui| app.frame(ui));
+            ctx.run_ui(input, |ui| app.frame(ui)).textures_delta.clear();
         };
         let click = |pos, button| {
             [true, false].map(|pressed| Event::PointerButton {
@@ -3339,6 +3347,15 @@ mod bench {
             app.update.status.as_deref(),
             Some("Version 9.0.0 is available.")
         );
+        // Remembered, so it shows until the next monthly check.
+        assert!(app.persisted.last_update_check > 0);
+        assert_eq!(
+            app.persisted.update_available,
+            Some(("9.0.0".into(), "https://example.com/release".into()))
+        );
+        app.update.available = None;
+        app.poll(0.0);
+        assert_eq!(app.update.available.as_ref().unwrap().version, "9.0.0");
         let entries = app.menu_entries();
         let item = entries
             .iter()
@@ -3359,6 +3376,8 @@ mod bench {
                 crate::update::current_version()
             ))
         );
+        assert!(app.update.available.is_none());
+        assert!(app.persisted.update_available.is_none());
     }
 
     /// Syntax highlighting at startup follows the Settings option, not how
@@ -3419,7 +3438,7 @@ mod bench {
                 )),
                 ..Default::default()
             };
-            let _ = ctx.run_ui(input, |ui| app.frame(ui));
+            ctx.run_ui(input, |ui| app.frame(ui)).textures_delta.clear();
         }
         assert_eq!(app.tab_scrolled[0], Some(last));
         app.run(crate::commands::Command::CloseAll);
