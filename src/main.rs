@@ -146,8 +146,13 @@ impl eframe::App for App {
 }
 
 fn app_icon() -> egui::IconData {
-    // Same artwork as the macOS bundle icon (scripts/make-icon.py).
-    eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon-256.png")).unwrap_or_default()
+    // Same artwork as the bundle / .exe icon (scripts/make-icon.py); the
+    // Windows version fills more of the square, as Windows icons do.
+    #[cfg(windows)]
+    let png = include_bytes!("../assets/windows/app-256.png");
+    #[cfg(not(windows))]
+    let png = include_bytes!("../assets/icon-256.png");
+    eframe::icon_data::from_png_bytes(png).unwrap_or_default()
 }
 
 fn main() -> eframe::Result<()> {

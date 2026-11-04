@@ -27,7 +27,8 @@ cargo test                       # unit tests (lexer, search, ops, encodings, ..
 - **Windows:** `cargo build --release --target x86_64-pc-windows-msvc` (build it on Windows; on a
   Mac you can type-check it with `cargo check --target x86_64-pc-windows-msvc`)
 
-The release build uses the GUI subsystem on Windows, so no console window opens.
+The release build uses the GUI subsystem on Windows, so no console window opens. The `.exe` carries
+the app icon and version details (`assets/windows/app.ico`, from `scripts/make-icon.py --ico`).
 
 ## Features
 
