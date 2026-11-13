@@ -801,6 +801,10 @@ impl App {
 
     /// File > Print: the primary selection, or the whole document.
     pub fn print_active(&mut self) {
+        // Keep a header/footer choice made in the last print panel.
+        if let Some(on) = crate::print::header_footer_changed() {
+            self.settings.print_header_footer = on;
+        }
         let Some(job) = self.print_job() else { return };
         if let Err(e) = crate::print::print(&job) {
             self.message("Print", &e);

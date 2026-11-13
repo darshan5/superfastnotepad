@@ -223,15 +223,22 @@ pub fn print_to_pdf(job: &PrintJob, pdf: &std::path::Path) -> Result<(), String>
     imp::print(job, Some(pdf))
 }
 
+/// The header/footer choice if it was changed in the last print panel
+/// (macOS shows it there), so the next print starts from it.
+pub fn header_footer_changed() -> Option<bool> {
+    imp::header_footer_changed()
+}
+
 #[cfg(target_os = "macos")]
 mod imp {
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
     use std::ffi::{CString, c_void};
     use std::path::Path;
+    use std::sync::OnceLock;
 
     use objc2::encode::{Encode, Encoding, RefEncode};
-    use objc2::runtime::{AnyObject, Sel};
-    use objc2::{class, msg_send};
+    use objc2::runtime::{AnyClass, AnyObject, AnyProtocol, ClassBuilder, Sel};
+    use objc2::{class, msg_send, sel};
 
     use super::PrintJob;
 
@@ -287,6 +294,158 @@ mod imp {
         /// Objects of the last print, released when the next one starts (a
         /// sheet returns before printing is done).
         static LAST: RefCell<Vec<*mut AnyObject>> = const { RefCell::new(Vec::new()) };
+        /// The last print's settings, and the header/footer choice it
+        /// started with.
+        static LAST_INFO: Cell<(*mut AnyObject, bool)> =
+            const { Cell::new((std::ptr::null_mut(), false)) };
+    }
+
+    pub fn header_footer_changed() -> Option<bool> {
+        let (info, initial) = LAST_INFO.get();
+        if info.is_null() {
+            return None;
+        }
+        // SAFETY: `info` is an NSPrintInfo kept alive in LAST; read on the
+        // main thread.
+        let now = unsafe {
+            let dict: *mut AnyObject = msg_send![info, dictionary];
+            let value: *mut AnyObject = msg_send![dict, objectForKey: NSPrintHeaderAndFooter];
+            if value.is_null() {
+                return None;
+            }
+            let b: bool = msg_send![value, boolValue];
+            b
+        };
+        (now != initial).then_some(now)
+    }
+
+    /// The print panel's `NSPrintInfo` dictionary (the controller's
+    /// `representedObject`).
+    unsafe fn panel_dict(this: &AnyObject) -> *mut AnyObject {
+        // SAFETY: an NSViewController whose representedObject the print
+        // panel sets to its NSPrintInfo.
+        unsafe {
+            let info: *mut AnyObject = msg_send![this, representedObject];
+            if info.is_null() {
+                return std::ptr::null_mut();
+            }
+            msg_send![info, dictionary]
+        }
+    }
+
+    /// An `NSViewController` for the print panel (`NSPrintPanelAccessorizing`)
+    /// with a `headerFooter` value; its checkbox calls `toggleHeaderFooter:`,
+    /// which updates the job and tells the panel to redraw the preview.
+    fn accessory_class() -> &'static AnyClass {
+        static CLASS: OnceLock<&'static AnyClass> = OnceLock::new();
+        CLASS.get_or_init(|| {
+            extern "C-unwind" fn summary(_this: &AnyObject, _cmd: Sel) -> *mut AnyObject {
+                // SAFETY: an empty, autoreleased NSArray.
+                unsafe { msg_send![class!(NSArray), array] }
+            }
+            extern "C-unwind" fn preview_keys(_this: &AnyObject, _cmd: Sel) -> *mut AnyObject {
+                // SAFETY: an autoreleased NSSet of one NSString.
+                unsafe { msg_send![class!(NSSet), setWithObject: ns_string("headerFooter")] }
+            }
+            extern "C-unwind" fn header_footer(this: &AnyObject, _cmd: Sel) -> *mut AnyObject {
+                // SAFETY: see `panel_dict`; returns an NSNumber or nil.
+                unsafe {
+                    let dict = panel_dict(this);
+                    if dict.is_null() {
+                        return std::ptr::null_mut();
+                    }
+                    msg_send![dict, objectForKey: NSPrintHeaderAndFooter]
+                }
+            }
+            extern "C-unwind" fn toggle(this: &AnyObject, _cmd: Sel, sender: *mut AnyObject) {
+                // SAFETY: `sender` is the checkbox (an NSButton); KVO
+                // notifications around the change make the panel re-preview.
+                unsafe {
+                    let dict = panel_dict(this);
+                    if dict.is_null() || sender.is_null() {
+                        return;
+                    }
+                    let state: isize = msg_send![sender, state];
+                    let key = ns_string("headerFooter");
+                    let () = msg_send![this, willChangeValueForKey: key];
+                    let flag: *mut AnyObject =
+                        msg_send![class!(NSNumber), numberWithBool: state != 0];
+                    let () = msg_send![dict, setObject: flag, forKey: NSPrintHeaderAndFooter];
+                    let () = msg_send![this, didChangeValueForKey: key];
+                }
+            }
+            let mut b = ClassBuilder::new(c"SfnPrintAccessory", class!(NSViewController))
+                .expect("SfnPrintAccessory is registered once");
+            if let Some(p) = AnyProtocol::get(c"NSPrintPanelAccessorizing") {
+                b.add_protocol(p);
+            }
+            // SAFETY: the signatures match the selectors (object getters
+            // with no arguments; an action taking its sender).
+            unsafe {
+                b.add_method(
+                    sel!(localizedSummaryItems),
+                    summary as extern "C-unwind" fn(_, _) -> _,
+                );
+                b.add_method(
+                    sel!(keyPathsForValuesAffectingPreview),
+                    preview_keys as extern "C-unwind" fn(_, _) -> _,
+                );
+                b.add_method(
+                    sel!(headerFooter),
+                    header_footer as extern "C-unwind" fn(_, _) -> _,
+                );
+                b.add_method(
+                    sel!(toggleHeaderFooter:),
+                    toggle as extern "C-unwind" fn(_, _, _),
+                );
+            }
+            b.register()
+        })
+    }
+
+    /// A "Print header and footer" checkbox for the print panel, bound to
+    /// the job's setting. Returns the objects to release later.
+    unsafe fn add_accessory(op: *mut AnyObject, on: bool) -> [*mut AnyObject; 3] {
+        // SAFETY: see `print`.
+        unsafe {
+            let ctrl: *mut AnyObject = msg_send![accessory_class(), new];
+            let () = msg_send![ctrl, setTitle: ns_string(crate::ui::APP_NAME)];
+            let button: *mut AnyObject = msg_send![
+                class!(NSButton),
+                checkboxWithTitle: ns_string("Print header and footer"),
+                target: ctrl,
+                action: Some(sel!(toggleHeaderFooter:))
+            ];
+            let () = msg_send![button, setState: isize::from(on)];
+            let button: *mut AnyObject = msg_send![button, retain];
+            let size: Size = msg_send![button, fittingSize];
+            let pad = 20.0;
+            let frame = Rect {
+                origin: Point { x: 0.0, y: 0.0 },
+                size: Size {
+                    width: size.width + 2.0 * pad,
+                    height: size.height + pad,
+                },
+            };
+            let view: *mut AnyObject = msg_send![class!(NSView), alloc];
+            let view: *mut AnyObject = msg_send![view, initWithFrame: frame];
+            let () = msg_send![
+                button,
+                setFrame: Rect {
+                    origin: Point {
+                        x: pad,
+                        y: pad / 2.0
+                    },
+                    size
+                }
+            ];
+            let () = msg_send![view, addSubview: button];
+            // Before the panel asks for it, so no nib is looked for.
+            let () = msg_send![ctrl, setView: view];
+            let panel: *mut AnyObject = msg_send![op, printPanel];
+            let () = msg_send![panel, addAccessoryController: ctrl];
+            [ctrl, view, button]
+        }
     }
 
     unsafe fn ns_string(s: &str) -> *mut AnyObject {
@@ -306,6 +465,7 @@ mod imp {
             LAST.with_borrow_mut(|last| {
                 let current: *mut AnyObject = msg_send![class!(NSPrintOperation), currentOperation];
                 if current.is_null() {
+                    LAST_INFO.set((std::ptr::null_mut(), false));
                     for o in last.drain(..) {
                         let () = msg_send![o, release];
                     }
@@ -379,6 +539,7 @@ mod imp {
             let op: *mut AnyObject = msg_send![op, retain];
             let () = msg_send![op, setJobTitle: ns_string(&job.title)];
             LAST.with_borrow_mut(|last| last.extend([attr, info, view, op]));
+            LAST_INFO.set((info, job.header_footer));
 
             if pdf.is_some() {
                 let () = msg_send![op, setShowsPrintPanel: false];
@@ -390,6 +551,8 @@ mod imp {
                     Err("Printing failed.".into())
                 };
             }
+            let extra = add_accessory(op, job.header_footer);
+            LAST.with_borrow_mut(|last| last.extend(extra));
             let app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication];
             let mut window: *mut AnyObject = msg_send![app, keyWindow];
             if window.is_null() {
@@ -480,6 +643,11 @@ mod imp {
 
     /// Twips per inch (RichEdit's page units).
     const TWIPS: i32 = 1440;
+
+    /// Windows' Print dialog has no app options: Settings decides.
+    pub fn header_footer_changed() -> Option<bool> {
+        None
+    }
 
     pub fn print(job: &PrintJob, _pdf: Option<&Path>) -> Result<(), String> {
         // SAFETY: plain Win32 calls on the UI thread. The print dialog's
@@ -697,6 +865,10 @@ mod imp {
     use std::path::Path;
 
     use super::PrintJob;
+
+    pub fn header_footer_changed() -> Option<bool> {
+        None
+    }
 
     pub fn print(_job: &PrintJob, _pdf: Option<&Path>) -> Result<(), String> {
         Err("Printing isn't supported on this platform yet.".into())
