@@ -25,6 +25,7 @@ mod ops;
 mod panels;
 mod password;
 mod platform;
+mod print;
 mod search;
 mod textops;
 mod theme;

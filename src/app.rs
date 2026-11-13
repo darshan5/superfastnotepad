@@ -799,6 +799,93 @@ impl App {
             .is_some_and(|v| v.autocomplete.is_some() || v.call_tip.is_some())
     }
 
+    /// File > Print: the primary selection, or the whole document.
+    pub fn print_active(&mut self) {
+        let Some(job) = self.print_job() else { return };
+        if let Err(e) = crate::print::print(&job) {
+            self.message("Print", &e);
+        }
+    }
+
+    /// The RTF to print for the active document.
+    pub fn print_job(&self) -> Option<crate::print::PrintJob> {
+        use crate::print::{PrintJob, PrintLine, build_rtf};
+        let id = self.active_id()?;
+        let d = self.docs.get(&id)?;
+        let sel = self
+            .views
+            .get(&(self.focused, id))
+            .map(ViewState::primary)
+            .filter(|s| !s.is_empty());
+        let (from, to) = sel.map_or((0, d.len_chars()), |s| (s.start(), s.end()));
+        let (first, mut last) = (d.char_to_line(from), d.char_to_line(to));
+        // A selection ending at a line's start doesn't print that line.
+        if sel.is_some() && last > first && d.line_start(last) == to {
+            last -= 1;
+        }
+        let s = &self.settings;
+        let lang = &self.langs.langs[d.lang];
+        // Paper is white: a dark editor theme prints in the light one.
+        let theme = {
+            let t = &self.themes.themes[self.theme_idx];
+            let bg = t.globals().bg;
+            let luma =
+                0.299 * f32::from(bg.r()) + 0.587 * f32::from(bg.g()) + 0.114 * f32::from(bg.b());
+            if luma >= 128.0 {
+                t
+            } else {
+                &self.themes.themes[self.themes.index_of(crate::theme::DEFAULT_THEME)]
+            }
+        };
+        let styles = s.print_colors.then(|| theme.resolve(lang));
+        let lexer = s
+            .print_colors
+            .then(|| crate::lexer::Lexer::new(lang, &self.langs))
+            .filter(|l| !l.is_plain());
+        let mut state = lexer.as_ref().map(crate::lexer::Lexer::initial_state);
+        let mut spans = Vec::new();
+        if let (Some(lx), Some(st)) = (&lexer, state.as_mut()) {
+            for l in 0..first {
+                *st = lx.lex_line(&d.line_text(l), *st, &mut spans).0;
+            }
+        }
+        let mut lines = Vec::with_capacity(last - first + 1);
+        for l in first..=last {
+            let text = d.line_text(l);
+            if let (Some(lx), Some(st)) = (&lexer, state.as_mut()) {
+                *st = lx.lex_line(&text, *st, &mut spans).0;
+            }
+            let start = d.line_start(l);
+            let byte = |c: usize| {
+                text.char_indices()
+                    .nth(c.saturating_sub(start))
+                    .map_or(text.len(), |(b, _)| b)
+            };
+            lines.push(PrintLine {
+                number: l + 1,
+                from: if l == first { byte(from) } else { 0 },
+                to: if l == last && sel.is_some() {
+                    byte(to)
+                } else {
+                    text.len()
+                },
+                spans: std::mem::take(&mut spans),
+                text,
+            });
+        }
+        Some(PrintJob {
+            title: d.display_name(),
+            rtf: build_rtf(
+                &lines,
+                styles.as_ref(),
+                s.print_line_numbers,
+                s.print_font_size,
+                d.tab_width,
+            ),
+            header_footer: s.print_header_footer,
+        })
+    }
+
     /// Runs `f` with the active document and its view state.
     pub fn with_active<R>(
         &mut self,
@@ -2810,6 +2897,7 @@ impl App {
                 });
             }
             Command::Summary => self.dialogs.summary = true,
+            Command::Print => self.print_active(),
             Command::ToggleDocMap => self.settings.show_doc_map = !self.settings.show_doc_map,
             Command::ToggleDocList => self.settings.show_doc_list = !self.settings.show_doc_list,
             Command::ToggleFunctionList => {

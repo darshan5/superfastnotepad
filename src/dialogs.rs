@@ -38,7 +38,7 @@ impl Default for ColumnEditorState {
 const FIND_FADED_OPACITY: f32 = 0.7;
 
 /// Sections of the Settings window, in order.
-pub const SETTINGS_SECTIONS: [&str; 8] = [
+pub const SETTINGS_SECTIONS: [&str; 9] = [
     "General",
     "Appearance",
     "Editing",
@@ -46,6 +46,7 @@ pub const SETTINGS_SECTIONS: [&str; 8] = [
     "Auto-Completion",
     "Files and Session",
     "Formatting",
+    "Printing",
     "Keyboard Shortcuts",
 ];
 
@@ -58,7 +59,8 @@ pub mod settings_section {
     pub const COMPLETION: usize = 4;
     pub const FILES: usize = 5;
     pub const FORMATTING: usize = 6;
-    pub const SHORTCUTS: usize = 7;
+    pub const PRINTING: usize = 7;
+    pub const SHORTCUTS: usize = 8;
 }
 
 /// State of the "Date and Unix Time" tool: a date/time picker converted to
@@ -1615,6 +1617,29 @@ impl App {
                     ))
                     .weak(),
                 );
+            }
+            settings_section::PRINTING => {
+                let s = &mut self.settings;
+                ui.label(RichText::new("Used by File > Print.").weak());
+                group(ui, "Page");
+                ui.checkbox(
+                    &mut s.print_colors,
+                    "Syntax colors (in a light theme, whatever the editor shows)",
+                );
+                ui.checkbox(&mut s.print_line_numbers, "Line numbers");
+                ui.checkbox(
+                    &mut s.print_header_footer,
+                    "File name and date at the top, page number at the bottom",
+                );
+                ui.horizontal(|ui| {
+                    ui.label("Font size:");
+                    ui.add(
+                        egui::DragValue::new(&mut s.print_font_size)
+                            .range(6.0..=24.0)
+                            .speed(0.5)
+                            .suffix(" pt"),
+                    );
+                });
             }
             settings_section::FORMATTING => {
                 use crate::formatters::{XmlQuotes, XmlWhitespace};

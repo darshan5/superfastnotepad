@@ -616,6 +616,8 @@ impl App {
             self.check(ui, "Read-Only", ro, C::ToggleReadOnly, out);
             self.item(ui, "Document Summary...", C::Summary, out);
             ui.separator();
+            self.item(ui, "Print...", C::Print, out);
+            ui.separator();
             self.items(ui, &[("Close", C::Close), ("Close All", C::CloseAll)], out);
             sub(ui, false, false, "Close Others", |ui| {
                 self.items(
@@ -3304,6 +3306,43 @@ mod bench {
             app.run(cmd);
             assert_eq!(app.clip.text, want);
         }
+    }
+
+    /// File > Print prints the selection only (whole lines after the
+    /// first), numbered from the document's line numbers.
+    #[test]
+    fn print_job_covers_the_selection() {
+        let dir = std::env::temp_dir().join("superfastnotepad-print-job-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _config = use_config_dir(dir.join("cfg"));
+        let mut app = App::new(StartupArgs {
+            files: Vec::new(),
+            line: None,
+            column: None,
+            lang: None,
+            no_session: true,
+            read_only: false,
+            always_on_top: false,
+            take: None,
+        });
+        let id = app.active_id().unwrap();
+        app.docs.get_mut(&id).unwrap().edit(
+            vec![(0, 0, "alpha\nbravo\ncharlie\ndelta\n".into())],
+            &[],
+            crate::document::EditKind::Other,
+            |_| Vec::new(),
+        );
+        app.settings.print_line_numbers = true;
+        let whole = app.print_job().unwrap().rtf;
+        assert!(whole.contains("alpha") && whole.contains("delta"));
+        // "avo\ncharlie\n" (ends at the start of line 4, which isn't printed).
+        app.with_active(|_, v, _| v.sels = vec![crate::document::Selection::new(8, 20)]);
+        let rtf = app.print_job().unwrap().rtf;
+        assert!(
+            rtf.contains("{\\cf1 2  }{\\cf2 avo}\\par\n{\\cf1 3  }{\\cf2 charlie}"),
+            "{rtf}"
+        );
+        assert!(!rtf.contains("alpha") && !rtf.contains("delta"), "{rtf}");
     }
 
     /// A finished update check that found a newer release adds "Update

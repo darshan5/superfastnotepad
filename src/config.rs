@@ -65,6 +65,14 @@ pub struct Settings {
     pub show_statusbar: bool,
     pub show_tabbar: bool,
     pub date_time_format: String,
+    /// File > Print: colour code by language (on paper, a light theme).
+    pub print_colors: bool,
+    pub print_line_numbers: bool,
+    /// File name and date at the top of each page, page number at the
+    /// bottom.
+    pub print_header_footer: bool,
+    /// Points.
+    pub print_font_size: f32,
     pub search_engine: String,
     pub copy_line_without_selection: bool,
     pub single_instance: bool,
@@ -145,6 +153,10 @@ impl Default for Settings {
             show_statusbar: true,
             show_tabbar: true,
             date_time_format: "yyyy-MM-dd HH:mm:ss".into(),
+            print_colors: true,
+            print_line_numbers: false,
+            print_header_footer: true,
+            print_font_size: 10.0,
             search_engine: DEFAULT_SEARCH_ENGINE.into(),
             copy_line_without_selection: true,
             single_instance: true,

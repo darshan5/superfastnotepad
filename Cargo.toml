@@ -40,13 +40,18 @@ objc2 = "0.6"
 # Callback for the system color sampler (eyedropper).
 block2 = "0.6"
 
-# Eyedropper: pointer position, key state and screen pixels.
+# Eyedropper: pointer position, key state and screen pixels; printing.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",
+    # Printing: the Print dialog, print jobs, and RichEdit page layout.
+    "Win32_Storage_Xps",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_Controls",
+    "Win32_UI_Controls_Dialogs",
 ] }
 
 [profile.release]

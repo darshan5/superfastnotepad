@@ -249,6 +249,8 @@ pub enum Command {
     FoldLevel(usize),
     UnfoldLevel(usize),
     Summary,
+    /// Prints the selection, or the whole document.
+    Print,
     ToggleDocMap,
     ToggleDocList,
     ToggleFunctionList,
@@ -369,6 +371,7 @@ pub fn default_shortcuts() -> Vec<(Command, Shortcut)> {
         (K::FontBigger, s(C, N, N, Key::Equals)),
         (K::FontSmaller, s(C, N, N, Key::Minus)),
         (K::Open, s(C, N, N, Key::O)),
+        (K::Print, s(C, N, N, Key::P)),
         (K::Reload, s(C, N, N, Key::R)),
         (K::Save, s(C, N, N, Key::S)),
         (K::SaveAs, s(C, C, N, Key::S)),
