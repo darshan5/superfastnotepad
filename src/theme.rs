@@ -306,21 +306,24 @@ impl ThemeRegistry {
     }
 
     /// The theme called `name`, ignoring case, `-` and `_`
-    /// (`high-contrast-light` finds "High Contrast Light").
+    /// (`ocr-optimized` finds "OCR Optimized").
     pub fn find(&self, name: &str) -> Option<usize> {
         let norm = |s: &str| s.to_lowercase().replace(['-', '_'], " ");
         let want = norm(name.trim());
         self.themes.iter().position(|t| norm(&t.name) == want)
     }
 
-    /// Saved theme names that no longer exist (the dark "High Contrast" was
-    /// removed) go back to the default light and dark themes.
+    /// Saved theme names that no longer exist: a renamed theme gets its new
+    /// name, a removed one (the dark "High Contrast") the default light or
+    /// dark theme.
     pub fn replace_missing(&self, light: &mut String, dark: &mut String) {
-        if self.find(light).is_none() {
-            *light = DEFAULT_THEME.into();
-        }
-        if self.find(dark).is_none() {
-            *dark = DEFAULT_DARK_THEME.into();
+        for (name, default) in [(light, DEFAULT_THEME), (dark, DEFAULT_DARK_THEME)] {
+            if name == "High Contrast Light" {
+                *name = "OCR Optimized".into();
+            }
+            if self.find(name).is_none() {
+                *name = default.into();
+            }
         }
     }
 
@@ -364,14 +367,12 @@ mod tests {
         let reg = ThemeRegistry::load();
         assert!(reg.themes[reg.index_of("Dark")].globals().is_dark);
         assert!(!reg.themes[reg.index_of("Light")].globals().is_dark);
-        let hc = reg
-            .find("high-contrast-light")
-            .expect("High Contrast Light");
+        let hc = reg.find("ocr-optimized").expect("OCR Optimized");
         let g = reg.themes[hc].globals();
         assert!(g.high_contrast && !g.is_dark);
         assert_eq!((g.fg, g.bg), (Color32::BLACK, Color32::WHITE));
         assert!(!reg.themes[reg.index_of("Light")].globals().high_contrast);
-        assert_eq!(reg.find("HIGH contrast LIGHT"), Some(hc));
+        assert_eq!(reg.find("ocr OPTIMIZED"), Some(hc));
         assert_eq!(reg.find("nope"), None);
         // The removed dark "High Contrast" falls back to the defaults.
         let (mut light, mut dark) = ("High Contrast".to_string(), "High Contrast".to_string());
@@ -379,6 +380,16 @@ mod tests {
         assert_eq!(
             (light.as_str(), dark.as_str()),
             (DEFAULT_THEME, DEFAULT_DARK_THEME)
+        );
+        // ... and the renamed "High Contrast Light" to "OCR Optimized".
+        let (mut light, mut dark) = (
+            "High Contrast Light".to_string(),
+            "High Contrast Light".to_string(),
+        );
+        reg.replace_missing(&mut light, &mut dark);
+        assert_eq!(
+            (light.as_str(), dark.as_str()),
+            ("OCR Optimized", "OCR Optimized")
         );
         let (mut light, mut dark) = ("Paper".to_string(), "Midnight".to_string());
         reg.replace_missing(&mut light, &mut dark);
@@ -401,7 +412,7 @@ mod tests {
             0.2126 * ch(c.r()) + 0.7152 * ch(c.g()) + 0.0722 * ch(c.b())
         }
         let reg = ThemeRegistry::load();
-        let t = &reg.themes[reg.find("High Contrast Light").unwrap()];
+        let t = &reg.themes[reg.find("OCR Optimized").unwrap()];
         for (name, tok) in &t.tokens {
             assert!(!tok.italic, "{name} is italic");
             let fg = tok.fg.unwrap();

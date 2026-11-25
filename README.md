@@ -43,19 +43,19 @@ the app icon and version details (`assets/windows/app.ico`, from `scripts/make-i
 | **Panels** | Function List (20 languages, background scan), JSON Tree (jump to source, copy JSON pointer/key/value), Document Map (with compare markers), Document List, Workspace, Character Panel, Clipboard History; duplicate, rename or move files to the Trash from the Workspace, Document List or All Open Documents |
 | **Compare** | Side by side with aligned spacer rows, or inline in one pane. Added/removed/changed/moved lines and changed words, scrollbar and Document Map markers. Compare two views, a tab with the next, selected lines, the clipboard, the last save, or a blank Original/Changed pair. Ignore whitespace, case or empty lines; swap sides; copy one or all differences left/right; side panels hidden while comparing |
 | **Tools** | Format: JSON, XML, HTML, CSS, JavaScript/TypeScript, Markdown (pretty print; minify for JSON/XML/CSS). Encode/Decode: Base64, URL, Quoted-printable. Data: CSV↔JSON, CSV↔TSV. Hash: MD5, SHA-1, SHA-256, SHA-512. Date and Unix Time: live clock, date picker to Unix time and back. Color Picker: saturation/brightness square, hue strip, RGB/hex/CMYK, eyedropper for any pixel on screen; inserts `#RRGGBB`. Password Generator: 4–64 characters from the OS secure random source, optional numbers and symbols |
-| **Other** | Six built-in themes (Light, Dark, Midnight, Paper, Forest, and High Contrast Light for screenshots and OCR) that can follow the OS light/dark setting, one Settings window (general, appearance, editing, new documents, completion, files, formatting, printing, keyboard shortcuts), tab colours and pinning, a monthly update check (File > Update Available when there's a newer release; can be turned off or run by hand in Settings > General), a searchable list of all tabs at the end of the tab bar, a tab menu with Open in Finder/Explorer, Terminal, the default app or the default browser |
+| **Other** | Six built-in themes (Light, Dark, Midnight, Paper, Forest, and OCR Optimized: black on white for screenshots read by OCR) that can follow the OS light/dark setting, one Settings window (general, appearance, editing, new documents, completion, files, formatting, printing, keyboard shortcuts), tab colours and pinning, a monthly update check (File > Update Available when there's a newer release; can be turned off or run by hand in Settings > General), a searchable list of all tabs at the end of the tab bar, a tab menu with Open in Finder/Explorer, Terminal, the default app or the default browser |
 
 Command line: `superfastnotepad [-multiInst] [-nosession] [--session-dir <folder>] [-ro] [-alwaysOnTop] [-l<lang>] [-n<line>] [-c<col>] [--font-size <pt>] [--theme <name>] [--large-results] [--high-contrast-results] [--wrap-results] [files or folders...]`
 
 The display options apply to that run only (they aren't saved): they change the same settings as
 View > Font Size and Settings > Appearance > Search results, but the saved values stay as they
 were unless you change one by hand while the app runs. `--no-large-results` etc. turn them off.
-`--theme <name>` (case and `-` don't matter: `--theme high-contrast-light`) shows a theme for that
+`--theme <name>` (case and `-` don't matter: `--theme ocr-optimized`) shows a theme for that
 run too, until one is picked in Settings. Sent to a running window, these options apply there.
 
 For screenshots read by OCR (AI agents driving a remote machine):
-`superfastnotepad --theme "High Contrast Light" --font-size 18 --large-results --wrap-results`.
-High Contrast Light is black on white with no italics, every text colour at 7:1 contrast or more,
+`superfastnotepad --theme "OCR Optimized" --font-size 18 --large-results --wrap-results`.
+OCR Optimized is black on white with no italics, every text colour at 7:1 contrast or more,
 menus, dialogs and search results in full black, and a solid (not see-through) Find window.
 
 Headless search (opens no window, prints grep-style `path:line: text` and a summary line;

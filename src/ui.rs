@@ -2325,17 +2325,17 @@ mod bench {
         // --theme shows a theme for this run without changing the settings,
         // and stays when the system switches light/dark.
         let saved_theme = (app.settings.theme.clone(), app.settings.dark_theme.clone());
-        app.open_args(&["--theme".into(), "high-contrast-light".into()]);
-        assert_eq!(app.themes.themes[app.theme_idx].name, "High Contrast Light");
+        app.open_args(&["--theme".into(), "ocr-optimized".into()]);
+        assert_eq!(app.themes.themes[app.theme_idx].name, "OCR Optimized");
         assert!(app.globals.high_contrast);
         app.follow_system_theme(true);
-        assert_eq!(app.themes.themes[app.theme_idx].name, "High Contrast Light");
+        assert_eq!(app.themes.themes[app.theme_idx].name, "OCR Optimized");
         assert_eq!(
             (app.settings.theme.clone(), app.settings.dark_theme.clone()),
             saved_theme
         );
         app.open_args(&["--theme=no such theme".into()]);
-        assert_eq!(app.themes.themes[app.theme_idx].name, "High Contrast Light");
+        assert_eq!(app.themes.themes[app.theme_idx].name, "OCR Optimized");
         // Picking a theme in Settings ends the override.
         let light = app.themes.index_of("Light");
         app.follow_system_theme(false);

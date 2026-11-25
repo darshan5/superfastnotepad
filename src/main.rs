@@ -84,7 +84,7 @@ fn parse_args() -> (StartupArgs, bool, Vec<String>) {
                 let names: Vec<&str> = themes.themes.iter().map(|t| t.name.as_str()).collect();
                 println!(
                     "Themes for --theme (this run only): {}\n\
-                     For screenshots/OCR: --theme \"High Contrast Light\" --font-size 18",
+                     For screenshots/OCR: --theme \"OCR Optimized\" --font-size 18",
                     names.join(", ")
                 );
                 std::process::exit(0);
