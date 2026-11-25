@@ -259,6 +259,9 @@ pub struct App {
     pub langs: LangRegistry,
     pub themes: ThemeRegistry,
     pub theme_idx: usize,
+    /// A theme from `--theme`, shown for this run instead of the saved one
+    /// (and the system light/dark switch) until one is picked in Settings.
+    pub cli_theme: Option<usize>,
     pub globals: Globals,
     styles_cache: HashMap<usize, LangStyles>,
     keyword_cache: HashMap<usize, Vec<String>>,
@@ -345,7 +348,7 @@ pub struct StartupArgs {
 }
 
 /// Command-line options that take a value (so it isn't opened as a file).
-pub const VALUE_FLAGS: &[&str] = &["--font-size", "--session-dir", "--take"];
+pub const VALUE_FLAGS: &[&str] = &["--font-size", "--theme", "--session-dir", "--take"];
 
 /// One setting given on the command line: what Settings held before (and
 /// keeps saving) and the value the command line set for this run.
@@ -479,6 +482,7 @@ impl App {
             profile: std::env::var_os("SUPERFASTNOTEPAD_PROFILE").map(|_| FrameProfile::default()),
             // main() loads this font before the first frame.
             applied_font: settings.font_file.clone(),
+            cli_theme: None,
             cli_display,
             font_error: None,
             font_choices: None,
@@ -606,6 +610,7 @@ impl App {
         if app.panes[0].tabs.is_empty() {
             app.new_document(0);
         }
+        app.apply_cli_theme(&args.raw);
         app
     }
 
@@ -616,12 +621,37 @@ impl App {
     pub fn set_theme(&mut self, idx: usize) {
         let idx = idx.min(self.themes.themes.len() - 1);
         let name = self.themes.themes[idx].name.clone();
+        self.cli_theme = None;
         if self.settings.follow_system_theme && self.system_dark {
             self.settings.dark_theme = name;
         } else {
             self.settings.theme = name;
         }
         self.show_theme(idx);
+    }
+
+    /// `--theme <name>` (or `--theme=<name>`): shows that theme for this
+    /// run only; the saved theme settings don't change.
+    pub fn apply_cli_theme(&mut self, args: &[String]) {
+        let mut it = args.iter();
+        while let Some(a) = it.next() {
+            let name = if a == "--theme" {
+                it.next().cloned()
+            } else {
+                a.strip_prefix("--theme=").map(str::to_string)
+            };
+            let Some(name) = name else { continue };
+            if let Some(i) = self.themes.find(&name) {
+                self.cli_theme = Some(i);
+                self.show_theme(i);
+            } else {
+                let names: Vec<&str> = self.themes.themes.iter().map(|t| t.name.as_str()).collect();
+                eprintln!(
+                    "--theme: no theme called \"{name}\" (themes: {})",
+                    names.join(", ")
+                );
+            }
+        }
     }
 
     /// Shows a theme without changing the settings.
@@ -634,7 +664,7 @@ impl App {
     /// Follows the OS light/dark setting when that option is on.
     pub fn follow_system_theme(&mut self, dark: bool) {
         self.system_dark = dark;
-        if !self.settings.follow_system_theme {
+        if !self.settings.follow_system_theme || self.cli_theme.is_some() {
             return;
         }
         let want = if dark {
@@ -1656,6 +1686,7 @@ impl App {
 
     pub fn open_args(&mut self, args: &[String]) {
         self.cli_display.apply(&mut self.settings, args);
+        self.apply_cli_theme(args);
         let mut line = None;
         let mut last = None;
         let mut it = args.iter();

@@ -35,6 +35,9 @@ struct TokenSource {
 #[derive(Deserialize)]
 struct ThemeSource {
     name: String,
+    /// Menus, dialogs and search results also use the full text colour.
+    #[serde(default)]
+    high_contrast: bool,
     ui: HashMap<String, String>,
     tokens: HashMap<String, TokenSource>,
 }
@@ -110,10 +113,13 @@ pub struct Globals {
     pub change_saved: Color32,
     pub active_tab_indicator: Color32,
     pub is_dark: bool,
+    /// Full-strength text everywhere (for screenshots and OCR).
+    pub high_contrast: bool,
 }
 
 pub struct Theme {
     pub name: String,
+    high_contrast: bool,
     ui: HashMap<String, Color32>,
     tokens: HashMap<String, TokenSource>,
 }
@@ -127,6 +133,7 @@ impl Theme {
         let src: ThemeSource = serde_json::from_str(json).ok()?;
         Some(Self {
             name: src.name,
+            high_contrast: src.high_contrast,
             ui: src
                 .ui
                 .iter()
@@ -176,6 +183,7 @@ impl Theme {
             change_saved: u("change_saved", Color32::from_rgb(0, 0xA0, 0)),
             active_tab_indicator: u("active_tab_indicator", Color32::from_rgb(0xFA, 0xAA, 0x3C)),
             is_dark: luminance(bg) < 110.0,
+            high_contrast: self.high_contrast,
         }
     }
 
@@ -297,6 +305,14 @@ impl ThemeRegistry {
         Self { themes }
     }
 
+    /// The theme called `name`, ignoring case, `-` and `_`
+    /// (`high-contrast-light` finds "High Contrast Light").
+    pub fn find(&self, name: &str) -> Option<usize> {
+        let norm = |s: &str| s.to_lowercase().replace(['-', '_'], " ");
+        let want = norm(name.trim());
+        self.themes.iter().position(|t| norm(&t.name) == want)
+    }
+
     pub fn index_of(&self, name: &str) -> usize {
         self.themes.iter().position(|t| t.name == name).unwrap_or(0)
     }
@@ -337,5 +353,43 @@ mod tests {
         let reg = ThemeRegistry::load();
         assert!(reg.themes[reg.index_of("Dark")].globals().is_dark);
         assert!(!reg.themes[reg.index_of("Light")].globals().is_dark);
+        let hc = reg
+            .find("high-contrast-light")
+            .expect("High Contrast Light");
+        let g = reg.themes[hc].globals();
+        assert!(g.high_contrast && !g.is_dark);
+        assert_eq!((g.fg, g.bg), (Color32::BLACK, Color32::WHITE));
+        assert!(!reg.themes[reg.index_of("Light")].globals().high_contrast);
+        assert_eq!(
+            reg.find("HIGH contrast"),
+            Some(reg.index_of("High Contrast"))
+        );
+        assert_eq!(reg.find("nope"), None);
+    }
+
+    /// The OCR theme: no italics, and every text colour at least 7:1
+    /// against its white background (WCAG AAA).
+    #[test]
+    fn high_contrast_light_is_readable() {
+        fn lum(c: Color32) -> f64 {
+            let ch = |v: u8| {
+                let v = f64::from(v) / 255.0;
+                if v <= 0.040_45 {
+                    v / 12.92
+                } else {
+                    ((v + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * ch(c.r()) + 0.7152 * ch(c.g()) + 0.0722 * ch(c.b())
+        }
+        let reg = ThemeRegistry::load();
+        let t = &reg.themes[reg.find("High Contrast Light").unwrap()];
+        for (name, tok) in &t.tokens {
+            assert!(!tok.italic, "{name} is italic");
+            let fg = tok.fg.unwrap();
+            let ratio = 1.05 / (lum(fg) + 0.05);
+            assert!(ratio >= 7.0, "{name}: contrast {ratio:.1}");
+        }
+        assert_eq!(t.ui("line_number_fg", Color32::GRAY), Color32::BLACK);
     }
 }

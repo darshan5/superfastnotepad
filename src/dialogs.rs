@@ -271,7 +271,12 @@ impl App {
                 .zip(ctx.pointer_hover_pos())
                 .is_some_and(|(r, p)| r.contains(p));
             let t = ctx.animate_bool_with_time(egui::Id::unique("find_fade"), hovered, 0.15);
-            let opacity = egui::lerp(FIND_FADED_OPACITY..=1.0, t);
+            // Solid in high-contrast themes: text behind it would confuse OCR.
+            let opacity = if self.globals.high_contrast {
+                1.0
+            } else {
+                egui::lerp(FIND_FADED_OPACITY..=1.0, t)
+            };
             let mut frame = egui::Frame::window(&ctx.global_style());
             frame.fill = frame.fill.gamma_multiply(opacity);
             frame.stroke.color = frame.stroke.color.gamma_multiply(opacity);
@@ -543,12 +548,19 @@ impl App {
             if let Some(f) = &self.fif {
                 ui.label(RichText::new(format!("Searching... {} files", f.progress)).small());
             } else if let Some((msg, kind)) = &self.find.status {
-                let c = match kind {
-                    StatusKind::Info => Color32::from_rgb(0x30, 0x60, 0xD0),
-                    StatusKind::NotFound => Color32::from_rgb(0xD0, 0x20, 0x20),
-                    StatusKind::Wrapped => Color32::from_rgb(0x20, 0x90, 0x20),
+                // High-contrast themes: darker colours at normal size (OCR).
+                let hc = self.globals.high_contrast;
+                let c = match (kind, hc) {
+                    (StatusKind::Info, false) => Color32::from_rgb(0x30, 0x60, 0xD0),
+                    (StatusKind::NotFound, false) => Color32::from_rgb(0xD0, 0x20, 0x20),
+                    (StatusKind::Wrapped, false) => Color32::from_rgb(0x20, 0x90, 0x20),
+                    (StatusKind::Info, true) => Color32::from_rgb(0x00, 0x00, 0x8B),
+                    (StatusKind::NotFound, true) => Color32::from_rgb(0xA0, 0x00, 0x00),
+                    (StatusKind::Wrapped, true) => Color32::from_rgb(0x00, 0x60, 0x00),
                 };
-                ui.add(egui::Label::new(RichText::new(msg).color(c).small()).truncate());
+                let text = RichText::new(msg).color(c);
+                let text = if hc { text } else { text.small() };
+                ui.add(egui::Label::new(text).truncate());
             }
         });
     }

@@ -66,7 +66,7 @@ fn parse_args() -> (StartupArgs, bool, Vec<String>) {
             }
             continue;
         }
-        if arg == "--font-size" {
+        if arg == "--font-size" || arg == "--theme" {
             args.next();
             continue;
         }
@@ -77,8 +77,15 @@ fn parse_args() -> (StartupArgs, bool, Vec<String>) {
             "-alwaysOnTop" => a.always_on_top = true,
             "--help" | "-h" => {
                 println!(
-                    "{0} [--help] [-multiInst] [-nosession] [--session-dir <folder>] [-ro] [-alwaysOnTop] [-l<Language>] [-n<line>] [-c<column>] [--font-size <pt>] [--large-results] [--high-contrast-results] [--wrap-results] [filePath ...]\n{0} search --help    (headless search; prints results, opens no window)",
+                    "{0} [--help] [-multiInst] [-nosession] [--session-dir <folder>] [-ro] [-alwaysOnTop] [-l<Language>] [-n<line>] [-c<column>] [--font-size <pt>] [--theme <name>] [--large-results] [--high-contrast-results] [--wrap-results] [filePath ...]\n{0} search --help    (headless search; prints results, opens no window)",
                     ui::APP_NAME
+                );
+                let themes = theme::ThemeRegistry::load();
+                let names: Vec<&str> = themes.themes.iter().map(|t| t.name.as_str()).collect();
+                println!(
+                    "Themes for --theme (this run only): {}\n\
+                     For screenshots/OCR: --theme \"High Contrast Light\" --font-size 18",
+                    names.join(", ")
                 );
                 std::process::exit(0);
             }

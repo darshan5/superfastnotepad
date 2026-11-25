@@ -119,7 +119,7 @@ impl App {
         );
         let hl = Color32::from_rgb(0xFF, 0xD0, 0x40);
         let s = &self.settings;
-        let high_contrast = s.results_high_contrast;
+        let high_contrast = s.results_high_contrast || self.globals.high_contrast;
         let fg = if high_contrast {
             ui.visuals().strong_text_color()
         } else {

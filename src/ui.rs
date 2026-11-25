@@ -318,11 +318,27 @@ impl App {
         self.poll(now);
         self.apply_pending_goto();
         self.follow_system_theme(ctx.system_theme() == Some(egui::Theme::Dark));
-        ctx.set_visuals(if self.globals.is_dark {
+        let mut visuals = if self.globals.is_dark {
             egui::Visuals::dark()
         } else {
             egui::Visuals::light()
-        });
+        };
+        if self.globals.high_contrast {
+            // Menus, dialogs and panels in the theme's full text colour, with
+            // solid outlines, for screenshots and OCR.
+            visuals.override_text_color = Some(self.globals.fg);
+            visuals.weak_text_color = Some(self.globals.fg);
+            visuals.panel_fill = self.globals.bg;
+            visuals.window_fill = self.globals.bg;
+            visuals.extreme_bg_color = self.globals.bg;
+            let stroke = egui::Stroke::new(1.0, self.globals.fg);
+            visuals.window_stroke = stroke;
+            visuals.widgets.noninteractive.bg_stroke = stroke;
+            visuals.widgets.inactive.bg_stroke = stroke;
+            visuals.selection.bg_fill = self.globals.selection_bg;
+            visuals.selection.stroke = egui::Stroke::new(1.0, self.globals.fg);
+        }
+        ctx.set_visuals(visuals);
 
         // Window close button.
         if ctx.input(|i| i.viewport().close_requested()) && !self.allow_close {
@@ -2306,6 +2322,26 @@ mod bench {
         assert!(app.settings.results_large_font && app.settings.results_word_wrap);
         assert!(!app.settings.results_high_contrast);
         assert_eq!(app.docs.len(), docs_before);
+        // --theme shows a theme for this run without changing the settings,
+        // and stays when the system switches light/dark.
+        let saved_theme = (app.settings.theme.clone(), app.settings.dark_theme.clone());
+        app.open_args(&["--theme".into(), "high-contrast-light".into()]);
+        assert_eq!(app.themes.themes[app.theme_idx].name, "High Contrast Light");
+        assert!(app.globals.high_contrast);
+        app.follow_system_theme(true);
+        assert_eq!(app.themes.themes[app.theme_idx].name, "High Contrast Light");
+        assert_eq!(
+            (app.settings.theme.clone(), app.settings.dark_theme.clone()),
+            saved_theme
+        );
+        app.open_args(&["--theme=no such theme".into()]);
+        assert_eq!(app.themes.themes[app.theme_idx].name, "High Contrast Light");
+        // Picking a theme in Settings ends the override.
+        let light = app.themes.index_of("Light");
+        app.follow_system_theme(false);
+        app.set_theme(light);
+        assert!(app.cli_theme.is_none());
+        assert_eq!(app.themes.themes[app.theme_idx].name, "Light");
         // ... for this run only: the values from before are what's saved.
         let saved = app.cli_display.settings_to_save(&app.settings);
         assert!((saved.font_size - 6.0).abs() < f32::EPSILON);
