@@ -313,6 +313,17 @@ impl ThemeRegistry {
         self.themes.iter().position(|t| norm(&t.name) == want)
     }
 
+    /// Saved theme names that no longer exist (the dark "High Contrast" was
+    /// removed) go back to the default light and dark themes.
+    pub fn replace_missing(&self, light: &mut String, dark: &mut String) {
+        if self.find(light).is_none() {
+            *light = DEFAULT_THEME.into();
+        }
+        if self.find(dark).is_none() {
+            *dark = DEFAULT_DARK_THEME.into();
+        }
+    }
+
     pub fn index_of(&self, name: &str) -> usize {
         self.themes.iter().position(|t| t.name == name).unwrap_or(0)
     }
@@ -360,11 +371,18 @@ mod tests {
         assert!(g.high_contrast && !g.is_dark);
         assert_eq!((g.fg, g.bg), (Color32::BLACK, Color32::WHITE));
         assert!(!reg.themes[reg.index_of("Light")].globals().high_contrast);
-        assert_eq!(
-            reg.find("HIGH contrast"),
-            Some(reg.index_of("High Contrast"))
-        );
+        assert_eq!(reg.find("HIGH contrast LIGHT"), Some(hc));
         assert_eq!(reg.find("nope"), None);
+        // The removed dark "High Contrast" falls back to the defaults.
+        let (mut light, mut dark) = ("High Contrast".to_string(), "High Contrast".to_string());
+        reg.replace_missing(&mut light, &mut dark);
+        assert_eq!(
+            (light.as_str(), dark.as_str()),
+            (DEFAULT_THEME, DEFAULT_DARK_THEME)
+        );
+        let (mut light, mut dark) = ("Paper".to_string(), "Midnight".to_string());
+        reg.replace_missing(&mut light, &mut dark);
+        assert_eq!((light.as_str(), dark.as_str()), ("Paper", "Midnight"));
     }
 
     /// The OCR theme: no italics, and every text colour at least 7:1

@@ -476,6 +476,7 @@ impl App {
         let mut settings = config::load_settings();
         let mut cli_display = CliDisplay::default();
         cli_display.apply(&mut settings, &args.raw);
+        themes.replace_missing(&mut settings.theme, &mut settings.dark_theme);
         let theme_idx = themes.index_of(&settings.theme);
         let globals = themes.themes[theme_idx].globals();
         let mut app = Self {
