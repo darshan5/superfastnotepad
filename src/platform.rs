@@ -227,25 +227,33 @@ pub fn start_instance_server(tx: Sender<Vec<String>>, wake: impl Fn() + Send + '
                 .as_str()
                 .map(std::path::PathBuf::from)
                 .unwrap_or_default();
-            let args: Vec<String> = v["args"]
+            let raw: Vec<&str> = v["args"]
                 .as_array()
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|x| x.as_str())
-                        .map(|s| {
-                            if s.starts_with('-') || Path::new(s).is_absolute() {
-                                s.to_string()
-                            } else {
-                                cwd.join(s).display().to_string()
-                            }
-                        })
-                        .collect()
-                })
+                .map(|a| a.iter().filter_map(|x| x.as_str()).collect())
                 .unwrap_or_default();
+            let args = absolute_args(&raw, &cwd);
             let _ = tx.send(args);
             wake();
         }
     });
+}
+
+/// Makes relative file arguments absolute against the sender's folder.
+/// Options, and values such as the `20` in `--font-size 20`, stay as given.
+fn absolute_args(raw: &[&str], cwd: &Path) -> Vec<String> {
+    let mut out: Vec<String> = Vec::with_capacity(raw.len());
+    for s in raw {
+        // A folder after `--session-dir` is a path; other option values aren't.
+        let is_value = out
+            .last()
+            .is_some_and(|p| p != "--session-dir" && crate::app::VALUE_FLAGS.contains(&p.as_str()));
+        if is_value || s.starts_with('-') || Path::new(s).is_absolute() {
+            out.push((*s).to_string());
+        } else {
+            out.push(cwd.join(s).display().to_string());
+        }
+    }
+    out
 }
 
 pub fn release_instance_lock() {
@@ -499,6 +507,34 @@ pub mod eyedropper {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn forwarded_args_keep_option_values() {
+        let cwd = std::path::Path::new("/work");
+        let raw = [
+            "--font-size",
+            "20",
+            "a.txt",
+            "--session-dir",
+            "s",
+            "-n5",
+            "/abs.txt",
+        ];
+        let out = super::absolute_args(&raw, cwd);
+        let j = |p: &str| cwd.join(p).display().to_string();
+        assert_eq!(
+            out,
+            vec![
+                "--font-size".to_string(),
+                "20".into(),
+                j("a.txt"),
+                "--session-dir".into(),
+                j("s"),
+                "-n5".into(),
+                "/abs.txt".into(),
+            ]
+        );
+    }
+
     #[test]
     fn browser_exe_from_open_command() {
         assert_eq!(

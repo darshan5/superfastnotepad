@@ -3,6 +3,7 @@
 
 mod app;
 mod calltip;
+mod cli_search;
 mod colorpick;
 mod commands;
 mod compare;
@@ -47,6 +48,7 @@ fn parse_args() -> (StartupArgs, bool, Vec<String>) {
         read_only: false,
         always_on_top: false,
         take: None,
+        raw: raw.clone(),
     };
     let mut multi = false;
     let mut args = raw.iter();
@@ -65,6 +67,10 @@ fn parse_args() -> (StartupArgs, bool, Vec<String>) {
             }
             continue;
         }
+        if arg == "--font-size" {
+            args.next();
+            continue;
+        }
         match arg.as_str() {
             "-multiInst" => multi = true,
             "-nosession" => a.no_session = true,
@@ -72,7 +78,7 @@ fn parse_args() -> (StartupArgs, bool, Vec<String>) {
             "-alwaysOnTop" => a.always_on_top = true,
             "--help" | "-h" => {
                 println!(
-                    "{} [--help] [-multiInst] [-nosession] [--session-dir <folder>] [-ro] [-alwaysOnTop] [-l<Language>] [-n<line>] [-c<column>] [filePath ...]",
+                    "{0} [--help] [-multiInst] [-nosession] [--session-dir <folder>] [-ro] [-alwaysOnTop] [-l<Language>] [-n<line>] [-c<column>] [--font-size <pt>] [--large-results] [--high-contrast-results] [--wrap-results] [filePath ...]\n{0} search --help    (headless search; prints results, opens no window)",
                     ui::APP_NAME
                 );
                 std::process::exit(0);
@@ -157,6 +163,11 @@ fn app_icon() -> egui::IconData {
 }
 
 fn main() -> eframe::Result<()> {
+    // Headless search: no settings, session, window or single-instance check.
+    let raw: Vec<String> = std::env::args().skip(1).collect();
+    if raw.first().is_some_and(|a| a == "search") {
+        std::process::exit(cli_search::run(&raw[1..]));
+    }
     #[cfg(target_os = "macos")]
     platform::finder::install();
     let (args, multi, raw) = parse_args();

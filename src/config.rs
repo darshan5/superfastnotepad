@@ -19,6 +19,13 @@ pub struct Settings {
     pub dark_theme: String,
     pub font_size: f32,
     pub ui_scale: f32,
+    /// Search results use the editor font size instead of the small default.
+    pub results_large_font: bool,
+    /// Search results in full-strength text colour (no grey line numbers),
+    /// for screenshots and OCR.
+    pub results_high_contrast: bool,
+    /// Long search result lines wrap instead of scrolling sideways.
+    pub results_word_wrap: bool,
     pub tab_size: usize,
     pub use_spaces: bool,
     pub auto_indent: bool,
@@ -111,6 +118,9 @@ impl Default for Settings {
             dark_theme: crate::theme::DEFAULT_DARK_THEME.into(),
             font_size: 13.0,
             ui_scale: 1.0,
+            results_large_font: false,
+            results_high_contrast: false,
+            results_word_wrap: false,
             tab_size: 4,
             use_spaces: false,
             auto_indent: true,

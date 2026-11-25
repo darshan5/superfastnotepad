@@ -364,9 +364,15 @@ pub struct SearchResults {
     pub query: String,
     pub files: Vec<FileHits>,
     pub searched_files: usize,
+    /// When the search ran (HH:MM:SS), so an old panel isn't taken for new.
+    pub time: String,
 }
 
 impl SearchResults {
+    pub fn now_label() -> String {
+        chrono::Local::now().format("%H:%M:%S").to_string()
+    }
+
     pub fn total_hits(&self) -> usize {
         self.files
             .iter()

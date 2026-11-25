@@ -305,6 +305,13 @@ impl App {
                     let back = self.find.backward;
                     self.find_in_active(&what, back, &opts, true);
                 }
+                "prev" => {
+                    self.push_history();
+                    let what = self.find.what.clone();
+                    let opts = self.settings.search_opts.clone();
+                    let back = !self.find.backward;
+                    self.find_in_active(&what, back, &opts, true);
+                }
                 "count" => self.count_matches(),
                 "find_all_cur" => self.find_all_docs(false),
                 "find_all_docs" => self.find_all_docs(true),
@@ -376,11 +383,16 @@ impl App {
                             focus,
                         );
                         if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                            let shift = ui.input(|i| i.modifiers.shift);
                             actions.push(match self.find.tab {
                                 FindTab::FindInFiles => "fif",
                                 FindTab::Mark => "mark",
+                                _ if shift => "prev",
                                 _ => "next",
                             });
+                            // Enter drops focus from a single-line field; take
+                            // it back so pressing Enter again finds the next one.
+                            self.find.focus_what = true;
                         }
                         ui.end_row();
                         if matches!(self.find.tab, FindTab::Replace | FindTab::FindInFiles)
@@ -1763,6 +1775,15 @@ impl App {
                     .suffix("×"),
             );
         });
+        ui.add_space(6.0);
+        ui.label(RichText::new("Search results").strong());
+        let s = &mut self.settings;
+        ui.checkbox(&mut s.results_large_font, "Large: use the editor font size");
+        ui.checkbox(
+            &mut s.results_high_contrast,
+            "High contrast: full-strength text colour",
+        );
+        ui.checkbox(&mut s.results_word_wrap, "Wrap long lines");
         ui.add_space(6.0);
         ui.label(RichText::new("Preview").strong());
         let g = &self.globals;

@@ -332,6 +332,38 @@ pub struct StartupArgs {
     pub always_on_top: bool,
     /// A tab handed over by another window (see `Command::MoveToNewWindow`).
     pub take: Option<PathBuf>,
+    /// The whole command line, for display options (see `apply_display_args`).
+    pub raw: Vec<String>,
+}
+
+/// Command-line options that take a value (so it isn't opened as a file).
+pub const VALUE_FLAGS: &[&str] = &["--font-size", "--session-dir", "--take"];
+
+/// Display options from a command line. They change (and save) the same
+/// settings as View > Font Size and Settings > Appearance:
+/// `--font-size <pt>`, `--large-results`, `--high-contrast-results`,
+/// `--wrap-results` (each `--no-...` turns it off again).
+pub fn apply_display_args(s: &mut config::Settings, args: &[String]) {
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        let size = if a == "--font-size" {
+            it.next().map(String::as_str)
+        } else {
+            a.strip_prefix("--font-size=")
+        };
+        if let Some(n) = size.and_then(|v| v.parse::<f32>().ok()) {
+            s.font_size = n.clamp(f32::from(MIN_FONT_SIZE), f32::from(MAX_FONT_SIZE));
+        }
+        match a.as_str() {
+            "--large-results" => s.results_large_font = true,
+            "--no-large-results" => s.results_large_font = false,
+            "--high-contrast-results" => s.results_high_contrast = true,
+            "--no-high-contrast-results" => s.results_high_contrast = false,
+            "--wrap-results" => s.results_word_wrap = true,
+            "--no-wrap-results" => s.results_word_wrap = false,
+            _ => {}
+        }
+    }
 }
 
 /// Collects how long building each frame takes and prints a summary every
@@ -374,7 +406,8 @@ impl App {
     pub fn new(args: StartupArgs) -> Self {
         let langs = LangRegistry::load();
         let themes = ThemeRegistry::load();
-        let settings = config::load_settings();
+        let mut settings = config::load_settings();
+        apply_display_args(&mut settings, &args.raw);
         let theme_idx = themes.index_of(&settings.theme);
         let globals = themes.themes[theme_idx].globals();
         let mut app = Self {
@@ -1542,12 +1575,13 @@ impl App {
     }
 
     pub fn open_args(&mut self, args: &[String]) {
+        apply_display_args(&mut self.settings, args);
         let mut line = None;
         let mut last = None;
         let mut it = args.iter();
         while let Some(a) = it.next() {
-            if a == "--session-dir" {
-                it.next(); // its folder argument isn't a file to open
+            if VALUE_FLAGS.contains(&a.as_str()) {
+                it.next(); // its value isn't a file to open
             } else if let Some(n) = a.strip_prefix("-n") {
                 line = n.parse::<usize>().ok();
             } else if a.starts_with('-') {
@@ -3456,6 +3490,7 @@ impl App {
             query: what.clone(),
             files: Vec::new(),
             searched_files: ids.len(),
+            time: SearchResults::now_label(),
         };
         for id in ids {
             let Some(d) = self.docs.get(&id) else {
@@ -3523,6 +3558,7 @@ impl App {
                 query: self.find.what.clone(),
                 files: Vec::new(),
                 searched_files: 0,
+                time: SearchResults::now_label(),
             });
             self.results_visible = true;
             self.results_cursor = None;

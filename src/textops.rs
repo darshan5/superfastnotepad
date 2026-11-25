@@ -521,6 +521,45 @@ impl HashAlgo {
     }
 }
 
+/// Decodes HTML/XML character references: `&quot;` `&amp;` `&lt;` `&gt;`
+/// `&apos;` `&nbsp;` and numeric `&#34;` / `&#x22;`. Anything else is kept.
+pub fn decode_html_entities(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(i) = rest.find('&') {
+        out.push_str(&rest[..i]);
+        rest = &rest[i..];
+        let decoded = rest[1..].find(';').filter(|&e| e <= 10).and_then(|e| {
+            let name = &rest[1..=e];
+            let c = match name {
+                "quot" => Some('"'),
+                "amp" => Some('&'),
+                "lt" => Some('<'),
+                "gt" => Some('>'),
+                "apos" => Some('\''),
+                "nbsp" => Some('\u{a0}'),
+                n => n.strip_prefix('#').and_then(|num| {
+                    let code = match num.strip_prefix(['x', 'X']) {
+                        Some(hex) => u32::from_str_radix(hex, 16).ok(),
+                        None => num.parse().ok(),
+                    };
+                    code.and_then(char::from_u32)
+                }),
+            };
+            c.map(|c| (c, e + 2))
+        });
+        if let Some((c, len)) = decoded {
+            out.push(c);
+            rest = &rest[len..];
+        } else {
+            out.push('&');
+            rest = &rest[1..];
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -656,5 +695,13 @@ mod tests {
     #[test]
     fn split() {
         assert_eq!(split_line("aa bb cc dd", 5), v(&["aa bb", "cc dd"]));
+    }
+
+    #[test]
+    fn html_entities() {
+        assert_eq!(
+            decode_html_entities("{&quot;a&quot;:&#49;,&#x62;:&amp;lt;} & x&bogus;"),
+            "{\"a\":1,b:&lt;} & x&bogus;"
+        );
     }
 }

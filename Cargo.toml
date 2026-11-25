@@ -50,6 +50,8 @@ windows-sys = { version = "0.61", features = [
     # Printing: the Print dialog, print jobs, and RichEdit page layout.
     "Win32_Storage_Xps",
     "Win32_System_LibraryLoader",
+    # Headless `search` prints to the cmd window it was started from.
+    "Win32_System_Console",
     "Win32_UI_Controls",
     "Win32_UI_Controls_Dialogs",
 ] }

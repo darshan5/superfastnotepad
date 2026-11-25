@@ -45,7 +45,23 @@ the app icon and version details (`assets/windows/app.ico`, from `scripts/make-i
 | **Tools** | Format: JSON, XML, HTML, CSS, JavaScript/TypeScript, Markdown (pretty print; minify for JSON/XML/CSS). Encode/Decode: Base64, URL, Quoted-printable. Data: CSV↔JSON, CSV↔TSV. Hash: MD5, SHA-1, SHA-256, SHA-512. Date and Unix Time: live clock, date picker to Unix time and back. Color Picker: saturation/brightness square, hue strip, RGB/hex/CMYK, eyedropper for any pixel on screen; inserts `#RRGGBB`. Password Generator: 4–64 characters from the OS secure random source, optional numbers and symbols |
 | **Other** | Six built-in themes (Light, Dark, Midnight, Paper, Forest, High Contrast) that can follow the OS light/dark setting, one Settings window (general, appearance, editing, new documents, completion, files, formatting, printing, keyboard shortcuts), tab colours and pinning, a monthly update check (File > Update Available when there's a newer release; can be turned off or run by hand in Settings > General), a searchable list of all tabs at the end of the tab bar, a tab menu with Open in Finder/Explorer, Terminal, the default app or the default browser |
 
-Command line: `superfastnotepad [-multiInst] [-nosession] [--session-dir <folder>] [-ro] [-alwaysOnTop] [-l<lang>] [-n<line>] [-c<col>] [files or folders...]`
+Command line: `superfastnotepad [-multiInst] [-nosession] [--session-dir <folder>] [-ro] [-alwaysOnTop] [-l<lang>] [-n<line>] [-c<col>] [--font-size <pt>] [--large-results] [--high-contrast-results] [--wrap-results] [files or folders...]`
+
+The display options change (and save) the same settings as View > Font Size and Settings >
+Appearance > Search results; `--no-large-results` etc. turn them off. Sent to a running window,
+they apply there.
+
+Headless search (opens no window, prints grep-style `path:line: text` and a summary line;
+exit code 0 = hits, 1 = none, 2 = error; `superfastnotepad search --help` lists all options):
+
+```
+superfastnotepad search --dir C:\logs --glob "export-*.txt" --regex "^46411," --fields --decode-entities --out C:\temp\hits.txt
+```
+
+Options: `--text`/`--regex`, `--ignore-case`, `--glob` (repeatable), `--recursive`, `--newest N`,
+`--modified-since YYYY-MM-DD`, `--context N`, `--max-line-chars N`, `--decode-entities`,
+`--fields` (show a CSV hit as `column: value` rows using the file's header line),
+`--format json`, `--out <file>`. On Windows use `--out` (or `> file`) to capture the output.
 
 Settings, session and backups are stored in the OS config dir (for example
 `~/Library/Application Support/org.superfastnotepad.superfastnotepad` on macOS,

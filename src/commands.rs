@@ -370,6 +370,10 @@ pub fn default_shortcuts() -> Vec<(Command, Shortcut)> {
         (K::FontBigger, s(C, N, N, Key::Plus)),
         (K::FontBigger, s(C, N, N, Key::Equals)),
         (K::FontSmaller, s(C, N, N, Key::Minus)),
+        (
+            K::SetFontSize(crate::app::DEFAULT_FONT_SIZE),
+            s(C, N, N, Key::Num0),
+        ),
         (K::Open, s(C, N, N, Key::O)),
         (K::Print, s(C, N, N, Key::P)),
         (K::Reload, s(C, N, N, Key::R)),

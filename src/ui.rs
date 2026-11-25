@@ -1385,6 +1385,30 @@ impl App {
                     clicked.borrow_mut().push(cmd);
                 }
             };
+            // A toolbar button showing a short text label instead of an icon.
+            let tb = |ui: &mut Ui, label: &str, size: f32, tip: &str, cmd: Command| {
+                let sc = shortcut_for(&shortcuts, &cmd)
+                    .map(|s| format!(" ({s})"))
+                    .unwrap_or_default();
+                let (rect, r) = ui.allocate_exact_size(vec2(24.0, 24.0), Sense::click());
+                if r.hovered() {
+                    ui.painter().rect_filled(
+                        rect,
+                        CornerRadius::same(3),
+                        ui.visuals().widgets.hovered.weak_bg_fill,
+                    );
+                }
+                ui.painter().text(
+                    rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    label,
+                    egui::FontId::proportional(size),
+                    fg,
+                );
+                if r.on_hover_text(format!("{tip}{sc}")).clicked() {
+                    clicked.borrow_mut().push(cmd);
+                }
+            };
             b(ui, Icon::New, "New", Command::New, false);
             b(ui, Icon::Open, "Open", Command::Open, false);
             b(
@@ -1424,6 +1448,18 @@ impl App {
                 Command::ShowAllChars,
                 self.settings.show_whitespace && self.settings.show_eol,
             );
+            ui.separator();
+            tb(ui, "A-", 11.0, "Decrease Font Size", Command::FontSmaller);
+            let default = crate::app::DEFAULT_FONT_SIZE;
+            let size = format!("{}", self.settings.font_size.round());
+            tb(
+                ui,
+                &size,
+                12.0,
+                &format!("Font size in points; click for the default ({default} pt)"),
+                Command::SetFontSize(default),
+            );
+            tb(ui, "A+", 14.0, "Increase Font Size", Command::FontBigger);
             ui.separator();
             b(
                 ui,
@@ -2240,6 +2276,7 @@ mod bench {
             read_only: false,
             always_on_top: false,
             take: None,
+            raw: Vec::new(),
         });
         app.run(crate::commands::Command::DateTimeTool);
         app.dialogs.preferences = true;
@@ -2263,6 +2300,24 @@ mod bench {
         app.run(crate::commands::Command::FontSmaller);
         app.run(crate::commands::Command::FontSmaller);
         assert!((app.settings.font_size - 6.0).abs() < f32::EPSILON);
+        // Display options from a command line (or one forwarded to this
+        // instance); a flag's value is not opened as a file.
+        let docs_before = app.docs.len();
+        let args: Vec<String> = ["--font-size", "20", "--large-results", "--wrap-results"]
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        app.open_args(&args);
+        assert!((app.settings.font_size - 20.0).abs() < f32::EPSILON);
+        assert!(app.settings.results_large_font && app.settings.results_word_wrap);
+        assert!(!app.settings.results_high_contrast);
+        assert_eq!(app.docs.len(), docs_before);
+        crate::app::apply_display_args(
+            &mut app.settings,
+            &["--font-size=200".into(), "--no-wrap-results".into()],
+        );
+        assert!((app.settings.font_size - 48.0).abs() < f32::EPSILON);
+        assert!(!app.settings.results_word_wrap);
         // Following the system light/dark setting.
         assert!(app.settings.follow_system_theme);
         app.follow_system_theme(true);
@@ -2300,6 +2355,7 @@ mod bench {
             read_only: false,
             always_on_top: false,
             take: None,
+            raw: Vec::new(),
         });
         app.settings.show_function_list = true;
         app.run(C::CompareBlank);
@@ -2387,6 +2443,7 @@ mod bench {
             read_only: false,
             always_on_top: false,
             take: None,
+            raw: Vec::new(),
         });
         let id = app.active_id().unwrap();
         app.with_active(|d, v, _| {
@@ -2436,6 +2493,7 @@ mod bench {
             read_only: false,
             always_on_top: false,
             take: None,
+            raw: Vec::new(),
         });
         let mut time = 0.0;
         let mut frame = |app: &mut App| {
@@ -2499,6 +2557,7 @@ mod bench {
             read_only: false,
             always_on_top: false,
             take,
+            raw: Vec::new(),
         };
         let mut app = App::new(args(vec![saved.display().to_string()], None));
         let saved_id = app.active_id().unwrap();
@@ -2607,6 +2666,7 @@ mod bench {
             read_only: false,
             always_on_top: false,
             take: None,
+            raw: Vec::new(),
         });
         let id = app.active_id().unwrap();
         app.docs.get_mut(&id).unwrap().edit(
@@ -2688,6 +2748,7 @@ mod bench {
             read_only: false,
             always_on_top: false,
             take: None,
+            raw: Vec::new(),
         });
         let id = app.active_id().unwrap();
 
@@ -2746,6 +2807,7 @@ mod bench {
             read_only: false,
             always_on_top: false,
             take: None,
+            raw: Vec::new(),
         });
         let id = app.active_id().unwrap();
         app.trash_file(&file).unwrap();
@@ -2840,6 +2902,7 @@ mod bench {
             read_only: false,
             always_on_top: false,
             take: None,
+            raw: Vec::new(),
         };
         let mut app = App::new(args(Vec::new()));
         app.settings.workspace_folders.clear();
@@ -2883,6 +2946,7 @@ mod bench {
             read_only: false,
             always_on_top: false,
             take: None,
+            raw: Vec::new(),
         });
         let entries = app.menu_entries();
         assert!(entries.len() > 200, "{} entries", entries.len());
@@ -2925,6 +2989,7 @@ mod bench {
             read_only: false,
             always_on_top: false,
             take: None,
+            raw: Vec::new(),
         });
         assert!(app.settings.sync_scroll_v && app.settings.sync_scroll_h);
         assert!(app.settings.word_wrap && app.settings.show_indent_guides);
@@ -2981,6 +3046,7 @@ mod bench {
             read_only: false,
             always_on_top: false,
             take: None,
+            raw: Vec::new(),
         });
         let id = app.active_id().unwrap();
         let text: String = (0..200)
@@ -3201,6 +3267,7 @@ mod bench {
             read_only: false,
             always_on_top: false,
             take: None,
+            raw: Vec::new(),
         });
         let a = app.active_id().unwrap();
         app.run(crate::commands::Command::New);
@@ -3296,6 +3363,7 @@ mod bench {
             read_only: false,
             always_on_top: false,
             take: None,
+            raw: Vec::new(),
         });
         use crate::commands::Command as C;
         for (cmd, want) in [
@@ -3324,6 +3392,7 @@ mod bench {
             read_only: false,
             always_on_top: false,
             take: None,
+            raw: Vec::new(),
         });
         let id = app.active_id().unwrap();
         app.docs.get_mut(&id).unwrap().edit(
@@ -3361,6 +3430,7 @@ mod bench {
             read_only: false,
             always_on_top: false,
             take: None,
+            raw: Vec::new(),
         });
         assert!(app.settings.check_for_updates, "on by default");
         let has_item = |app: &mut App| {
@@ -3463,6 +3533,7 @@ mod bench {
             read_only: false,
             always_on_top: false,
             take: None,
+            raw: Vec::new(),
         });
         for _ in 0..60 {
             app.new_document(0);
@@ -3505,6 +3576,7 @@ mod bench {
                 read_only: false,
                 always_on_top: false,
                 take: None,
+                raw: Vec::new(),
             });
             app.settings.syntax_highlighting = highlight;
             app.settings.show_function_list = std::env::var_os("BENCH_FUNCLIST").is_some();
@@ -3599,6 +3671,7 @@ mod bench {
             read_only: false,
             always_on_top: false,
             take: None,
+            raw: Vec::new(),
         });
         let mut time = 0.0;
         let mut frame = |app: &mut App, events: Vec<Event>| {

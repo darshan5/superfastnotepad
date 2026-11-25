@@ -155,6 +155,16 @@ fn dedup_headers(raw: &[String]) -> Vec<String> {
     out
 }
 
+/// The fields of one CSV line (quotes handled). A line the parser rejects
+/// is split on plain commas.
+pub fn split_csv_line(line: &str) -> Vec<String> {
+    match parse_csv(line, ',') {
+        Ok(mut r) if r.len() == 1 => r.remove(0).fields,
+        Ok(r) if r.is_empty() => Vec::new(),
+        _ => line.split(',').map(str::to_string).collect(),
+    }
+}
+
 /// JSON string literal for `s` (with escaping).
 fn json_str(s: &str) -> String {
     serde_json::to_string(s).unwrap_or_else(|_| "\"\"".to_string())
