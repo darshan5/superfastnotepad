@@ -73,9 +73,11 @@ features that aren't built yet, and [TODO.md](TODO.md) for planned compare featu
 
 ## Limitations
 
-- **Fonts:** the app uses only the built-in system monospace font (Menlo on macOS, Consolas on
-  Windows) for the editor and the UI. There's no font chooser or fallback font, so characters
-  that font lacks (for example Chinese, Japanese, Korean) show as empty boxes.
+- **Fonts:** the editor and the UI use one font: the built-in system monospace font (Menlo on
+  macOS, Consolas on Windows) or one picked in Settings > Appearance (installed monospace fonts,
+  or any .ttf/.otf/.ttc file). The built-in font fills in characters a picked font lacks, but
+  characters neither has (for example Chinese, Japanese, Korean) show as empty boxes. The editor
+  gives every character the same width, so proportional fonts don't line up.
 - **Highlighting** uses one generic, data-driven lexer for all languages. Embedded JS/CSS in HTML
   and PHP blocks are handled; very language-specific constructs (for example Perl heredocs) are
   highlighted more simply.

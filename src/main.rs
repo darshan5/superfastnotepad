@@ -15,6 +15,7 @@ mod document;
 mod editor;
 mod encoding;
 mod filter;
+mod fonts;
 mod formatters;
 mod formatters_web;
 mod function_list;
@@ -32,8 +33,6 @@ mod textops;
 mod theme;
 mod ui;
 mod update;
-
-use std::sync::Arc;
 
 use app::{App, StartupArgs};
 
@@ -93,34 +92,15 @@ fn parse_args() -> (StartupArgs, bool, Vec<String>) {
     (a, multi, raw)
 }
 
-/// Loads the one font the whole UI uses: the platform's built-in monospace
-/// face (Menlo on macOS, Consolas on Windows). No fonts are bundled.
-fn setup_fonts(ctx: &egui::Context) -> Result<(), String> {
-    let candidates: &[&str] = if cfg!(target_os = "macos") {
-        &[
-            "/System/Library/Fonts/Menlo.ttc",
-            "/System/Library/Fonts/Monaco.ttf",
-        ]
-    } else if cfg!(windows) {
-        &[
-            "C:\\Windows\\Fonts\\consola.ttf",
-            "C:\\Windows\\Fonts\\cour.ttf",
-        ]
-    } else {
-        &["/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"]
-    };
-    let bytes = candidates
-        .iter()
-        .find_map(|p| std::fs::read(p).ok())
-        .ok_or_else(|| format!("no system font found (tried {})", candidates.join(", ")))?;
-    let mut fonts = egui::FontDefinitions::empty();
-    fonts
-        .font_data
-        .insert("system".into(), Arc::new(egui::FontData::from_owned(bytes)));
-    for fam in [egui::FontFamily::Monospace, egui::FontFamily::Proportional] {
-        fonts.families.insert(fam, vec!["system".into()]);
+/// Loads the one font the whole UI uses (see `fonts`). A font file from
+/// Settings that can't be read falls back to the built-in face.
+fn setup_fonts(ctx: &egui::Context, font_file: &str) -> Result<(), String> {
+    if let Err(e) = fonts::apply(ctx, font_file) {
+        if font_file.is_empty() {
+            return Err(e);
+        }
+        eprintln!("font: {e}");
     }
-    ctx.set_fonts(fonts);
     // Dialog titles use the heading size; the default (18) looks oversized
     // next to 13 pt body text.
     ctx.all_styles_mut(|s| {
@@ -137,6 +117,7 @@ impl eframe::App for App {
         if (ui.ctx().zoom_factor() - scale).abs() > 0.001 {
             ui.ctx().set_zoom_factor(scale);
         }
+        self.apply_font_if_changed(ui.ctx());
         let start = std::time::Instant::now();
         self.frame(ui);
         if let Some(p) = &mut self.profile {
@@ -176,6 +157,7 @@ fn main() -> eframe::Result<()> {
         return Ok(());
     }
     let always_on_top = args.always_on_top;
+    let font_file = settings.font_file.clone();
     let mut viewport = egui::ViewportBuilder::default()
         .with_title(ui::APP_NAME)
         .with_inner_size([1100.0, 760.0])
@@ -207,7 +189,7 @@ fn main() -> eframe::Result<()> {
         ui::APP_NAME,
         options,
         Box::new(move |cc| {
-            setup_fonts(&cc.egui_ctx)?;
+            setup_fonts(&cc.egui_ctx, &font_file)?;
             #[cfg(target_os = "macos")]
             {
                 let ctx = cc.egui_ctx.clone();

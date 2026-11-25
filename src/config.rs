@@ -18,6 +18,9 @@ pub struct Settings {
     pub follow_system_theme: bool,
     pub dark_theme: String,
     pub font_size: f32,
+    /// Font file for the editor and interface; empty = the built-in
+    /// monospace face (Menlo / Consolas).
+    pub font_file: String,
     pub ui_scale: f32,
     /// Search results use the editor font size instead of the small default.
     pub results_large_font: bool,
@@ -117,6 +120,7 @@ impl Default for Settings {
             follow_system_theme: true,
             dark_theme: crate::theme::DEFAULT_DARK_THEME.into(),
             font_size: 13.0,
+            font_file: String::new(),
             ui_scale: 1.0,
             results_large_font: false,
             results_high_contrast: false,

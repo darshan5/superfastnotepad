@@ -1701,6 +1701,74 @@ impl App {
     }
 
     /// Theme, fonts and interface size.
+    /// Settings > Appearance > Font: the installed monospace fonts, or any
+    /// font file.
+    fn font_picker(&mut self, ui: &mut Ui) {
+        let choices = self
+            .font_choices
+            .get_or_insert_with(crate::fonts::monospace_fonts)
+            .clone();
+        let current = self.settings.font_file.clone();
+        let default = format!("{} (default)", crate::fonts::default_name());
+        let shown = if current.is_empty() {
+            default.clone()
+        } else {
+            choices
+                .iter()
+                .find(|(_, p)| p.to_string_lossy() == current)
+                .map(|(n, _)| n.clone())
+                .unwrap_or_else(|| {
+                    std::path::Path::new(&current)
+                        .file_name()
+                        .map_or(current.clone(), |n| n.to_string_lossy().to_string())
+                })
+        };
+        ui.horizontal(|ui| {
+            let (r, _) = ui.allocate_exact_size(egui::vec2(100.0, 18.0), egui::Sense::hover());
+            ui.put(r, egui::Label::new("Font:").halign(egui::Align::LEFT));
+            egui::ComboBox::from_id_salt("font_file")
+                .selected_text(shown)
+                .width(220.0)
+                .height(400.0)
+                .show_ui(ui, |ui| {
+                    if ui.selectable_label(current.is_empty(), default).clicked() {
+                        self.settings.font_file.clear();
+                    }
+                    for (name, path) in &choices {
+                        let p = path.to_string_lossy().to_string();
+                        if ui.selectable_label(p == current, name).clicked() {
+                            self.settings.font_file = p;
+                        }
+                    }
+                });
+            if ui
+                .button("Font file...")
+                .on_hover_text("Use any .ttf, .otf or .ttc font file")
+                .clicked()
+                && let Some(f) = rfd::FileDialog::new()
+                    .add_filter("Fonts", &["ttf", "otf", "ttc"])
+                    .pick_file()
+            {
+                self.settings.font_file = f.display().to_string();
+            }
+        });
+        ui.label(
+            RichText::new(
+                "Used for the editor and the interface. Fixed-width (monospace) fonts line up \
+                 best: the editor gives every character the same width.",
+            )
+            .weak()
+            .small(),
+        );
+        if let Some(e) = &self.font_error {
+            ui.label(
+                RichText::new(format!("Couldn't load the font, using the default: {e}"))
+                    .color(Color32::from_rgb(0xD0, 0x20, 0x20))
+                    .small(),
+            );
+        }
+    }
+
     fn appearance_settings(&mut self, ui: &mut Ui) {
         ui.add_space(6.0);
         ui.label(RichText::new("Theme").strong());
@@ -1775,6 +1843,7 @@ impl App {
                     .suffix("×"),
             );
         });
+        self.font_picker(ui);
         ui.add_space(6.0);
         ui.label(RichText::new("Search results").strong());
         let s = &mut self.settings;

@@ -1450,15 +1450,6 @@ impl App {
             );
             ui.separator();
             tb(ui, "A-", 11.0, "Decrease Font Size", Command::FontSmaller);
-            let default = crate::app::DEFAULT_FONT_SIZE;
-            let size = format!("{}", self.settings.font_size.round());
-            tb(
-                ui,
-                &size,
-                12.0,
-                &format!("Font size in points; click for the default ({default} pt)"),
-                Command::SetFontSize(default),
-            );
             tb(ui, "A+", 14.0, "Increase Font Size", Command::FontBigger);
             ui.separator();
             b(
@@ -1563,7 +1554,10 @@ impl App {
             .popup_rect
             .zip(ui.input(|i| i.pointer.hover_pos()))
             .is_some_and(|(r, p)| r.contains(p));
-        if !resp.has_focus() && !over_popup {
+        // Enter takes focus from a single-line field in the same frame it is
+        // pressed; that frame must still run the chosen item.
+        let entered = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        if !resp.has_focus() && !over_popup && !entered {
             self.menu_search.open = false;
         }
         if !self.menu_search.open || self.menu_search.text.trim().is_empty() {
@@ -2266,7 +2260,7 @@ mod bench {
         let _ = std::fs::remove_dir_all(&cfg);
         let _config = use_config_dir(cfg);
         let ctx = egui::Context::default();
-        crate::setup_fonts(&ctx).unwrap();
+        crate::setup_fonts(&ctx, "").unwrap();
         let mut app = App::new(StartupArgs {
             files: Vec::new(),
             line: None,
@@ -2483,7 +2477,7 @@ mod bench {
         std::fs::write(&log, &text).unwrap();
         let _config = use_config_dir(dir.join("cfg"));
         let ctx = egui::Context::default();
-        crate::setup_fonts(&ctx).unwrap();
+        crate::setup_fonts(&ctx, "").unwrap();
         let mut app = App::new(StartupArgs {
             files: vec![log.display().to_string()],
             line: None,
@@ -2629,7 +2623,7 @@ mod bench {
     #[test]
     fn menu_gutter_has_the_same_width() {
         let ctx = egui::Context::default();
-        crate::setup_fonts(&ctx).unwrap();
+        crate::setup_fonts(&ctx, "").unwrap();
         ctx.run_ui(RawInput::default(), |ui| {
             let width = |text: String| {
                 let font = egui::TextStyle::Button.resolve(ui.style());
@@ -2656,7 +2650,7 @@ mod bench {
         let _ = std::fs::remove_dir_all(&dir);
         let _config = use_config_dir(dir.join("cfg"));
         let ctx = egui::Context::default();
-        crate::setup_fonts(&ctx).unwrap();
+        crate::setup_fonts(&ctx, "").unwrap();
         let mut app = App::new(StartupArgs {
             files: Vec::new(),
             line: None,
@@ -2824,7 +2818,7 @@ mod bench {
         // Draws the menu (in place, not in a popup) and clicks button `n`.
         let click = |path: Option<&std::path::Path>, n: Option<usize>| {
             let ctx = egui::Context::default();
-            crate::setup_fonts(&ctx).unwrap();
+            crate::setup_fonts(&ctx, "").unwrap();
             let mut got = None;
             let mut buttons = Vec::new();
             for (i, pressed) in [None, Some(true), Some(false)].into_iter().enumerate() {
@@ -2979,7 +2973,7 @@ mod bench {
         let _ = std::fs::remove_dir_all(&dir);
         let _config = use_config_dir(dir.join("cfg"));
         let ctx = egui::Context::default();
-        crate::setup_fonts(&ctx).unwrap();
+        crate::setup_fonts(&ctx, "").unwrap();
         let mut app = App::new(StartupArgs {
             files: Vec::new(),
             line: None,
@@ -3036,7 +3030,7 @@ mod bench {
         let _ = std::fs::remove_dir_all(&dir);
         let _config = use_config_dir(dir.join("cfg"));
         let ctx = egui::Context::default();
-        crate::setup_fonts(&ctx).unwrap();
+        crate::setup_fonts(&ctx, "").unwrap();
         let mut app = App::new(StartupArgs {
             files: Vec::new(),
             line: None,
@@ -3116,7 +3110,7 @@ mod bench {
         let click =
             |doc: &Document, compare: Option<(u64, &str)>, path: &[usize]| -> Vec<(C, bool)> {
                 let ctx = egui::Context::default();
-                crate::setup_fonts(&ctx).unwrap();
+                crate::setup_fonts(&ctx, "").unwrap();
                 let mut got = Vec::new();
                 let mut t = 0.0;
                 let mut frame = |events: Vec<Event>, got: &mut Vec<(C, bool)>| {
@@ -3257,7 +3251,7 @@ mod bench {
         let _ = std::fs::remove_dir_all(&dir);
         let _config = use_config_dir(dir.join("cfg"));
         let ctx = egui::Context::default();
-        crate::setup_fonts(&ctx).unwrap();
+        crate::setup_fonts(&ctx, "").unwrap();
         let mut app = App::new(StartupArgs {
             files: Vec::new(),
             line: None,
@@ -3523,7 +3517,7 @@ mod bench {
         let _ = std::fs::remove_dir_all(&dir);
         let _config = use_config_dir(dir.join("cfg"));
         let ctx = egui::Context::default();
-        crate::setup_fonts(&ctx).unwrap();
+        crate::setup_fonts(&ctx, "").unwrap();
         let mut app = App::new(StartupArgs {
             files: Vec::new(),
             line: None,
@@ -3566,7 +3560,7 @@ mod bench {
         let _config = use_config_dir(cfg);
         for highlight in [false, true] {
             let ctx = egui::Context::default();
-            crate::setup_fonts(&ctx).unwrap();
+            crate::setup_fonts(&ctx, "").unwrap();
             let mut app = App::new(StartupArgs {
                 files: vec![path.clone()],
                 line: None,
@@ -3661,7 +3655,7 @@ mod bench {
         let _ = std::fs::remove_dir_all(&dir);
         let _config = use_config_dir(dir.join("cfg"));
         let ctx = egui::Context::default();
-        crate::setup_fonts(&ctx).unwrap();
+        crate::setup_fonts(&ctx, "").unwrap();
         let mut app = App::new(StartupArgs {
             files: Vec::new(),
             line: None,

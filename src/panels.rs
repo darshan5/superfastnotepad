@@ -163,88 +163,110 @@ impl App {
         scroll.auto_shrink([false, false]).show(ui, |ui| {
             for (fi, f) in results.files.iter().enumerate() {
                 let n: usize = f.hits.iter().map(|h| h.ranges.len()).sum();
-                egui::CollapsingHeader::new(
-                    RichText::new(format!(
-                        "{} ({n} hit{})",
-                        f.title,
-                        if n == 1 { "" } else { "s" }
-                    ))
-                    .size(font_size)
-                    .strong()
-                    .color(file_color),
-                )
-                .id_salt(("res", fi, &f.title))
-                .default_open(true)
-                .show(ui, |ui| {
-                    for (hi, h) in f.hits.iter().enumerate().take(5000) {
-                        let mut job = LayoutJob::default();
-                        if wrap {
-                            // Leave room for the button's padding and the scroll bar.
-                            let sp = ui.spacing();
-                            // The visible width: a long file path above can make the
-                            // layout area wider than what's on screen.
-                            let visible = (ui.clip_rect().right() - ui.cursor().left())
-                                .min(ui.available_width());
-                            job.wrap.max_width = (visible
-                                - 2.0 * sp.button_padding.x
-                                - sp.scroll.bar_width
-                                - sp.scroll.bar_outer_margin
-                                - 4.0)
-                                .max(50.0);
-                        }
-                        let mono = egui::FontId::monospace(font_size);
-                        job.append(
-                            &format!("Line {:>5}: ", h.line + 1),
-                            0.0,
-                            egui::TextFormat::simple(mono.clone(), line_no_color),
-                        );
-                        let mut last = 0;
-                        let text = &h.text;
-                        for &(s, e) in &h.ranges {
-                            let (s, e) = (s.min(text.len()), e.min(text.len()));
-                            if s < last || !text.is_char_boundary(s) || !text.is_char_boundary(e) {
-                                continue;
+                let title = RichText::new(format!(
+                    "{} ({n} hit{})",
+                    f.title,
+                    if n == 1 { "" } else { "s" }
+                ))
+                .size(font_size)
+                .strong()
+                .color(file_color);
+                // Wrapping turns sideways scrolling off, so a long path wraps
+                // too (laid out here: the header would re-wrap a job to its own width).
+                let title: egui::WidgetText = if wrap {
+                    let width = (ui.clip_rect().right() - ui.cursor().left())
+                        .min(ui.available_width())
+                        - ui.spacing().indent
+                        - ui.spacing().scroll.bar_width
+                        - 8.0;
+                    let mut job = LayoutJob::default();
+                    title.append_to(
+                        &mut job,
+                        ui.style(),
+                        egui::FontSelection::Default,
+                        egui::Align::Center,
+                    );
+                    job.wrap.max_width = width.max(50.0);
+                    ui.fonts_mut(|f| f.layout_job(job)).into()
+                } else {
+                    title.into()
+                };
+                egui::CollapsingHeader::new(title)
+                    .id_salt(("res", fi, &f.title))
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        for (hi, h) in f.hits.iter().enumerate().take(5000) {
+                            let mut job = LayoutJob::default();
+                            if wrap {
+                                // Leave room for the button's padding and the scroll bar.
+                                let sp = ui.spacing();
+                                // The visible width: a long file path above can make the
+                                // layout area wider than what's on screen.
+                                let visible = (ui.clip_rect().right() - ui.cursor().left())
+                                    .min(ui.available_width());
+                                job.wrap.max_width = (visible
+                                    - 2.0 * sp.button_padding.x
+                                    - sp.scroll.bar_width
+                                    - sp.scroll.bar_outer_margin
+                                    - 4.0)
+                                    .max(50.0);
                             }
+                            let mono = egui::FontId::monospace(font_size);
                             job.append(
-                                &text[last..s],
+                                &format!("Line {:>5}: ", h.line + 1),
                                 0.0,
-                                egui::TextFormat::simple(mono.clone(), fg),
+                                egui::TextFormat::simple(mono.clone(), line_no_color),
                             );
-                            job.append(
-                                &text[s..e],
-                                0.0,
-                                egui::TextFormat {
-                                    font_id: mono.clone(),
-                                    color: Color32::BLACK,
-                                    background: hl,
-                                    ..Default::default()
-                                },
+                            let mut last = 0;
+                            let text = &h.text;
+                            for &(s, e) in &h.ranges {
+                                let (s, e) = (s.min(text.len()), e.min(text.len()));
+                                if s < last
+                                    || !text.is_char_boundary(s)
+                                    || !text.is_char_boundary(e)
+                                {
+                                    continue;
+                                }
+                                job.append(
+                                    &text[last..s],
+                                    0.0,
+                                    egui::TextFormat::simple(mono.clone(), fg),
+                                );
+                                job.append(
+                                    &text[s..e],
+                                    0.0,
+                                    egui::TextFormat {
+                                        font_id: mono.clone(),
+                                        color: Color32::BLACK,
+                                        background: hl,
+                                        ..Default::default()
+                                    },
+                                );
+                                last = e;
+                            }
+                            if last <= text.len() {
+                                job.append(
+                                    &text[last..],
+                                    0.0,
+                                    egui::TextFormat::simple(mono.clone(), fg),
+                                );
+                            }
+                            let selected = cursor == Some((fi, hi));
+                            // Wrapped rows are laid out here: a Button re-wraps a
+                            // LayoutJob to its own (too wide) width, but keeps a galley.
+                            let text: egui::WidgetText = if wrap {
+                                ui.fonts_mut(|f| f.layout_job(job)).into()
+                            } else {
+                                job.into()
+                            };
+                            let r = ui.add(
+                                egui::Button::selectable(selected, text).frame_when_inactive(false),
                             );
-                            last = e;
+                            if r.double_clicked() || r.clicked() {
+                                goto = Some((fi, hi));
+                            }
                         }
-                        if last <= text.len() {
-                            job.append(
-                                &text[last..],
-                                0.0,
-                                egui::TextFormat::simple(mono.clone(), fg),
-                            );
-                        }
-                        let selected = cursor == Some((fi, hi));
-                        // Wrapped rows are laid out here: a Button re-wraps a
-                        // LayoutJob to its own (too wide) width, but keeps a galley.
-                        let text: egui::WidgetText = if wrap {
-                            ui.fonts_mut(|f| f.layout_job(job)).into()
-                        } else {
-                            job.into()
-                        };
-                        let r = ui.add(
-                            egui::Button::selectable(selected, text).frame_when_inactive(false),
-                        );
-                        if r.double_clicked() || r.clicked() {
-                            goto = Some((fi, hi));
-                        }
-                    }
-                });
+                    });
             }
         });
         let s = &mut self.settings;

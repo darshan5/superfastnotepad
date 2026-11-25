@@ -237,6 +237,12 @@ pub struct Dialogs {
 pub struct App {
     /// Frame timing, printed to stderr when `SUPERFASTNOTEPAD_PROFILE` is set.
     pub profile: Option<FrameProfile>,
+    /// The font file now loaded (see `apply_font_if_changed`).
+    pub applied_font: String,
+    /// Why the chosen font couldn't be loaded, shown in Settings.
+    pub font_error: Option<String>,
+    /// Installed monospace fonts, listed once when Settings needs them.
+    pub font_choices: Option<Vec<(String, PathBuf)>>,
     /// Last title sent to the window.
     pub window_title: String,
     /// The OS is in dark mode (as last reported).
@@ -412,6 +418,10 @@ impl App {
         let globals = themes.themes[theme_idx].globals();
         let mut app = Self {
             profile: std::env::var_os("SUPERFASTNOTEPAD_PROFILE").map(|_| FrameProfile::default()),
+            // main() loads this font before the first frame.
+            applied_font: settings.font_file.clone(),
+            font_error: None,
+            font_choices: None,
             window_title: String::new(),
             system_dark: false,
             window_geometry: None,
@@ -1572,6 +1582,16 @@ impl App {
             self.last_monitor_check = now;
             self.check_external_changes();
         }
+    }
+
+    /// Loads the font chosen in Settings when it changes.
+    pub fn apply_font_if_changed(&mut self, ctx: &egui::Context) {
+        if self.settings.font_file == self.applied_font {
+            return;
+        }
+        self.applied_font = self.settings.font_file.clone();
+        self.font_error = crate::fonts::apply(ctx, &self.applied_font).err();
+        ctx.request_repaint();
     }
 
     pub fn open_args(&mut self, args: &[String]) {
