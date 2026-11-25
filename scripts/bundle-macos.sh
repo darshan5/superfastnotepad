@@ -35,6 +35,8 @@ APP="target/$TARGET/release/$NAME.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "target/$TARGET/release/$NAME" "$APP/Contents/MacOS/$NAME"
+# The headless CLI travels inside the bundle.
+cp "target/$TARGET/release/$NAME-cli" "$APP/Contents/MacOS/$NAME-cli"
 cp "$ICNS" "$APP/Contents/Resources/AppIcon.icns"
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -97,5 +99,6 @@ PLIST
 
 # Ad-hoc signature so the bundle (binary + Info.plist) is sealed; this is
 # not a Developer ID signature, so other Macs still show a first-run warning.
+codesign --force --sign - "$APP/Contents/MacOS/$NAME-cli"
 codesign --force --sign - "$APP"
 echo "Built $APP"

@@ -99,13 +99,19 @@ jobs:
           cargo build --release --target ${{ matrix.target }}
           Copy-Item target/${{ matrix.target }}/release/superfastnotepad.exe `
             superfastnotepad-${{ needs.tag.outputs.tag }}-${{ matrix.asset }}.exe
+          # The console program for scripts: waits, prints, sets the exit code.
+          Copy-Item target/${{ matrix.target }}/release/superfastnotepad-cli.exe `
+            superfastnotepad-cli-${{ needs.tag.outputs.tag }}-${{ matrix.asset }}.exe
+          # Smoke test: it must run as a console program and exit 0.
+          ./superfastnotepad-cli-${{ needs.tag.outputs.tag }}-${{ matrix.asset }}.exe --version
+          if ($LASTEXITCODE -ne 0) { throw "superfastnotepad-cli --version failed" }
 
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset }}
           path: |
-            superfastnotepad-*.dmg
-            superfastnotepad-*.exe
+            superfastnotepad*.dmg
+            superfastnotepad*.exe
 
   release:
     needs: [tag, build]
@@ -127,6 +133,7 @@ jobs:
           sudo apt-get update -q && sudo apt-get install -yq nsis
           makensis -V2 -DVERSION="${TAG#v}" \
             -DEXE="$PWD/dist/superfastnotepad-$TAG-windows-x64.exe" \
+            -DCLIEXE="$PWD/dist/superfastnotepad-cli-$TAG-windows-x64.exe" \
             -DOUTFILE="$PWD/dist/superfastnotepad-$TAG-windows-x64-setup.exe" \
             src/installer/superfastnotepad.nsi
       - uses: softprops/action-gh-release@v2
@@ -141,7 +148,8 @@ jobs:
           body: |
             ## Downloads
 
-            - **macOS (Apple Silicon):** `superfastnotepad-${{ needs.tag.outputs.tag }}-macos-apple-silicon.dmg`. Open it and drag `superfastnotepad.app` to Applications.
-            - **Windows (64-bit):** `superfastnotepad-${{ needs.tag.outputs.tag }}-windows-x64-setup.exe` installs it for your user (no admin needed) with a Start menu shortcut, an "Open with" entry and an uninstaller. Or download `superfastnotepad-${{ needs.tag.outputs.tag }}-windows-x64.exe` and run it as is.
+            - **macOS (Apple Silicon):** `superfastnotepad-${{ needs.tag.outputs.tag }}-macos-apple-silicon.dmg`. Open it and drag `superfastnotepad.app` to Applications. The headless CLI is inside: `/Applications/superfastnotepad.app/Contents/MacOS/superfastnotepad-cli`.
+            - **Windows (64-bit) installer:** `superfastnotepad-${{ needs.tag.outputs.tag }}-windows-x64-setup.exe` installs the app and `superfastnotepad-cli.exe` for your user (no admin needed) with a Start menu shortcut, an "Open with" entry, the install folder on your PATH (optional) and an uninstaller. `setup.exe /S` installs silently.
+            - **Windows (64-bit) standalone:** `superfastnotepad-${{ needs.tag.outputs.tag }}-windows-x64.exe` (the app) and `superfastnotepad-cli-${{ needs.tag.outputs.tag }}-windows-x64.exe` (headless search for scripts and AI agents: a console program, so cmd and PowerShell wait for it and get its exit code). Run either as is.
 
             The builds aren't code-signed. On macOS, the first time, right-click the app and choose Open (or run `xattr -dr com.apple.quarantine /Applications/superfastnotepad.app`). On Windows, choose "More info" > "Run anyway" in the SmartScreen prompt.

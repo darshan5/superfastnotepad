@@ -14,10 +14,17 @@ Builds for Windows (64-bit) and macOS (Apple Silicon) are on the
 [Releases](https://github.com/darshan5/superfastnotepad/releases) page. They're made by the
 `Release` workflow in `.github/workflows/release.yml`, which tags a version and drafts a release.
 
+| File | What it is |
+|---|---|
+| `superfastnotepad-vX.Y.Z-windows-x64-setup.exe` | Windows installer (per user, no admin): the app and `superfastnotepad-cli.exe`, Start menu, "Open with", PATH (optional). `/S` installs silently |
+| `superfastnotepad-vX.Y.Z-windows-x64.exe` | The Windows app on its own |
+| `superfastnotepad-cli-vX.Y.Z-windows-x64.exe` | Headless search on its own, a console program for scripts and AI agents |
+| `superfastnotepad-vX.Y.Z-macos-apple-silicon.dmg` | The macOS app; the CLI is `superfastnotepad.app/Contents/MacOS/superfastnotepad-cli` |
+
 ## Build
 
 ```sh
-cargo build --release            # binary: target/release/superfastnotepad(.exe)
+cargo build --release            # target/release/superfastnotepad(.exe) and superfastnotepad-cli(.exe)
 cargo test                       # unit tests (lexer, search, ops, encodings, ...)
 ```
 
@@ -58,17 +65,42 @@ For screenshots read by OCR (AI agents driving a remote machine):
 OCR Optimized is black on white with no italics, every text colour at 7:1 contrast or more,
 menus, dialogs and search results in full black, and a solid (not see-through) Find window.
 
-Headless search (opens no window, prints grep-style `path:line: text` and a summary line;
-exit code 0 = hits, 1 = none, 2 = error; `superfastnotepad search --help` lists all options):
+Headless search with `superfastnotepad-cli` (opens no window, prints grep-style
+`path:line: text` and a summary line; exit code 0 = hits, 1 = none, 2 = error;
+`superfastnotepad-cli search --help` lists all options):
 
 ```
-superfastnotepad search --dir C:\logs --glob "export-*.txt" --regex "^46411," --fields --decode-entities --out C:\temp\hits.txt
+superfastnotepad-cli search --dir C:\logs --glob "export-*.txt" --regex "^46411," --fields --decode-entities --out C:\temp\hits.txt
 ```
 
 Options: `--text`/`--regex`, `--ignore-case`, `--glob` (repeatable), `--recursive`, `--newest N`,
 `--modified-since YYYY-MM-DD`, `--context N`, `--max-line-chars N`, `--decode-entities`,
 `--fields` (show a CSV hit as `column: value` rows using the file's header line),
-`--format json`, `--out <file>`. On Windows use `--out` (or `> file`) to capture the output.
+`--format json`, `--out <file>`. `superfastnotepad search ...` (the app's own program) runs the
+same search, but on Windows it's a GUI program, so use `superfastnotepad-cli` from scripts.
+
+### For AI agents on Windows (cmd, PowerShell, Run box)
+
+`superfastnotepad-cli.exe` is a console program: cmd and PowerShell wait for it, its output can
+be piped, and `%ERRORLEVEL%` / `$LASTEXITCODE` hold its exit code. The installer puts it in
+`%LOCALAPPDATA%\Programs\superfastnotepad\` and, with "Add to PATH" (on by default), on the PATH
+of windows opened after installing. Without PATH, use the full path:
+
+| Shell | Command |
+|---|---|
+| cmd | `"%LOCALAPPDATA%\Programs\superfastnotepad\superfastnotepad-cli.exe" search --dir C:\logs --text "error" --out C:\temp\hits.txt` |
+| PowerShell | `& "$env:LOCALAPPDATA\Programs\superfastnotepad\superfastnotepad-cli.exe" search --dir C:\logs --regex '^46411,' --out C:\temp\hits.txt` |
+| Run box (Win+R) | `cmd /c superfastnotepad-cli search --dir C:\logs --text error --out C:\temp\hits.txt` |
+
+- Prefer `--out <file>` and read the file back: it's UTF-8 in every shell, while Windows
+  PowerShell 5.1's `>` rewrites output as UTF-16.
+- PowerShell: put a quoted program path after `&`; quote regexes with single quotes (`$` and
+  backtick are special inside double quotes); `%` and `^` need no escaping there, but do in cmd.
+- In cmd, `%NAME%` expands even inside quotes: write `%%` in a .bat file for a literal `%`.
+- The installer also registers App Paths, so `start superfastnotepad-cli ...` and
+  `Start-Process superfastnotepad -ArgumentList ...` find either program without PATH.
+- To open a file in the app for screenshots: `start "" superfastnotepad --theme "OCR Optimized" --font-size 18 C:\logs\app.log`
+  (`start` returns at once; the app is a window, not a console program).
 
 Settings, session and backups are stored in the OS config dir (for example
 `~/Library/Application Support/org.superfastnotepad.superfastnotepad` on macOS,
@@ -96,6 +128,7 @@ features that aren't built yet, and [TODO.md](TODO.md) for planned compare featu
 ```
 src/
   main.rs           startup, CLI args, font (one system monospace face), single-instance
+  bin/superfastnotepad-cli.rs  console program for headless search (cli_search.rs)
   app.rs            state + command dispatch
   ui.rs             menus, toolbar, tab bars, split views, status bar
   editor.rs         the editor widget

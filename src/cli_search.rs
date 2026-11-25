@@ -11,7 +11,9 @@ use std::time::SystemTime;
 use crate::search::{self, SearchMode, SearchOptions};
 
 pub const USAGE: &str = "\
-Usage: superfastnotepad search --dir <folder> (--text <s> | --regex <re>) [options]
+Usage: superfastnotepad-cli search --dir <folder> (--text <s> | --regex <re>) [options]
+       (or `superfastnotepad search ...`: the same search from the app's own
+       program, which on Windows doesn't wait or give an exit code in a shell)
 
   --dir <folder>          folder to search (default: current folder)
   --text <s>              find this literal text

@@ -1,6 +1,6 @@
 [package]
 name = "superfastnotepad"
-version = "0.3.4"
+version = "0.3.5"
 edition = "2024"
 license = "MIT"
 description = "A fast text editor written in pure Rust (Windows + macOS)"
@@ -8,6 +8,11 @@ description = "A fast text editor written in pure Rust (Windows + macOS)"
 [[bin]]
 name = "superfastnotepad"
 path = "src/main.rs"
+
+# Headless commands as a console program (waits, prints, exit codes on Windows).
+[[bin]]
+name = "superfastnotepad-cli"
+path = "src/bin/superfastnotepad-cli.rs"
 
 [dependencies]
 # `clipboard` connects copy and paste to the system clipboard.
