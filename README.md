@@ -47,9 +47,10 @@ the app icon and version details (`assets/windows/app.ico`, from `scripts/make-i
 
 Command line: `superfastnotepad [-multiInst] [-nosession] [--session-dir <folder>] [-ro] [-alwaysOnTop] [-l<lang>] [-n<line>] [-c<col>] [--font-size <pt>] [--large-results] [--high-contrast-results] [--wrap-results] [files or folders...]`
 
-The display options change (and save) the same settings as View > Font Size and Settings >
-Appearance > Search results; `--no-large-results` etc. turn them off. Sent to a running window,
-they apply there.
+The display options apply to that run only (they aren't saved): they change the same settings as
+View > Font Size and Settings > Appearance > Search results, but the saved values stay as they
+were unless you change one by hand while the app runs. `--no-large-results` etc. turn them off.
+Sent to a running window, they apply there.
 
 Headless search (opens no window, prints grep-style `path:line: text` and a summary line;
 exit code 0 = hits, 1 = none, 2 = error; `superfastnotepad search --help` lists all options):

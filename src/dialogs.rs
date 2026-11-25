@@ -644,7 +644,7 @@ impl App {
             if !open {
                 self.dialogs.preferences = false;
                 self.dialogs.shortcut_rows = None;
-                crate::config::save_settings(&self.settings);
+                crate::config::save_settings(&self.cli_display.settings_to_save(&self.settings));
             }
         }
 

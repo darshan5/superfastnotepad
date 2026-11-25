@@ -2306,12 +2306,28 @@ mod bench {
         assert!(app.settings.results_large_font && app.settings.results_word_wrap);
         assert!(!app.settings.results_high_contrast);
         assert_eq!(app.docs.len(), docs_before);
-        crate::app::apply_display_args(
+        // ... for this run only: the values from before are what's saved.
+        let saved = app.cli_display.settings_to_save(&app.settings);
+        assert!((saved.font_size - 6.0).abs() < f32::EPSILON);
+        assert!(!saved.results_large_font && !saved.results_word_wrap);
+        app.cli_display.apply(
             &mut app.settings,
             &["--font-size=200".into(), "--no-wrap-results".into()],
         );
         assert!((app.settings.font_size - 48.0).abs() < f32::EPSILON);
         assert!(!app.settings.results_word_wrap);
+        let saved = app.cli_display.settings_to_save(&app.settings);
+        assert!((saved.font_size - 6.0).abs() < f32::EPSILON);
+        // A change made by hand while running is saved.
+        app.run(crate::commands::Command::SetFontSize(15));
+        app.settings.results_large_font = false;
+        let saved = app.cli_display.settings_to_save(&app.settings);
+        assert!((saved.font_size - 15.0).abs() < f32::EPSILON);
+        assert!(!saved.results_large_font);
+        // ... and a later --font-size keeps 15 as the saved size.
+        app.open_args(&["--font-size".into(), "30".into()]);
+        let saved = app.cli_display.settings_to_save(&app.settings);
+        assert!((saved.font_size - 15.0).abs() < f32::EPSILON);
         // Following the system light/dark setting.
         assert!(app.settings.follow_system_theme);
         app.follow_system_theme(true);

@@ -239,6 +239,8 @@ pub struct App {
     pub profile: Option<FrameProfile>,
     /// The font file now loaded (see `apply_font_if_changed`).
     pub applied_font: String,
+    /// Display options from the command line (not saved).
+    pub cli_display: CliDisplay,
     /// Why the chosen font couldn't be loaded, shown in Settings.
     pub font_error: Option<String>,
     /// Installed monospace fonts, listed once when Settings needs them.
@@ -338,37 +340,93 @@ pub struct StartupArgs {
     pub always_on_top: bool,
     /// A tab handed over by another window (see `Command::MoveToNewWindow`).
     pub take: Option<PathBuf>,
-    /// The whole command line, for display options (see `apply_display_args`).
+    /// The whole command line, for display options (see `CliDisplay`).
     pub raw: Vec<String>,
 }
 
 /// Command-line options that take a value (so it isn't opened as a file).
 pub const VALUE_FLAGS: &[&str] = &["--font-size", "--session-dir", "--take"];
 
-/// Display options from a command line. They change (and save) the same
-/// settings as View > Font Size and Settings > Appearance:
+/// One setting given on the command line: what Settings held before (and
+/// keeps saving) and the value the command line set for this run.
+#[derive(Clone, Copy, Debug)]
+struct Override<T> {
+    saved: T,
+    cli: T,
+}
+
+fn set_override<T: Copy + PartialEq>(field: &mut T, slot: &mut Option<Override<T>>, value: T) {
+    let saved = match *slot {
+        // Still the command line's value: keep what was saved before it.
+        Some(o) if *field == o.cli => o.saved,
+        // First time, or changed by hand since: that is the value to keep.
+        _ => *field,
+    };
+    *field = value;
+    *slot = Some(Override { saved, cli: value });
+}
+
+fn restore_override<T: Copy + PartialEq>(field: &mut T, slot: Option<Override<T>>) {
+    // A value changed by hand while running is saved as it is.
+    if let Some(o) = slot
+        && *field == o.cli
+    {
+        *field = o.saved;
+    }
+}
+
+/// Display options from a command line, for this run only:
 /// `--font-size <pt>`, `--large-results`, `--high-contrast-results`,
-/// `--wrap-results` (each `--no-...` turns it off again).
-pub fn apply_display_args(s: &mut config::Settings, args: &[String]) {
-    let mut it = args.iter();
-    while let Some(a) = it.next() {
-        let size = if a == "--font-size" {
-            it.next().map(String::as_str)
-        } else {
-            a.strip_prefix("--font-size=")
-        };
-        if let Some(n) = size.and_then(|v| v.parse::<f32>().ok()) {
-            s.font_size = n.clamp(f32::from(MIN_FONT_SIZE), f32::from(MAX_FONT_SIZE));
+/// `--wrap-results` (each `--no-...` turns it off). They change the same
+/// settings as View > Font Size and Settings > Appearance, but the values
+/// saved before them are what gets saved.
+#[derive(Debug, Default)]
+pub struct CliDisplay {
+    font_size: Option<Override<f32>>,
+    large: Option<Override<bool>>,
+    contrast: Option<Override<bool>>,
+    wrap: Option<Override<bool>>,
+}
+
+impl CliDisplay {
+    pub fn apply(&mut self, s: &mut config::Settings, args: &[String]) {
+        let mut it = args.iter();
+        while let Some(a) = it.next() {
+            let size = if a == "--font-size" {
+                it.next().map(String::as_str)
+            } else {
+                a.strip_prefix("--font-size=")
+            };
+            if let Some(n) = size.and_then(|v| v.parse::<f32>().ok()) {
+                let n = n.clamp(f32::from(MIN_FONT_SIZE), f32::from(MAX_FONT_SIZE));
+                set_override(&mut s.font_size, &mut self.font_size, n);
+            }
+            let (field, slot, on) = match a.as_str() {
+                "--large-results" => (&mut s.results_large_font, &mut self.large, true),
+                "--no-large-results" => (&mut s.results_large_font, &mut self.large, false),
+                "--high-contrast-results" => {
+                    (&mut s.results_high_contrast, &mut self.contrast, true)
+                }
+                "--no-high-contrast-results" => {
+                    (&mut s.results_high_contrast, &mut self.contrast, false)
+                }
+                "--wrap-results" => (&mut s.results_word_wrap, &mut self.wrap, true),
+                "--no-wrap-results" => (&mut s.results_word_wrap, &mut self.wrap, false),
+                _ => continue,
+            };
+            set_override(field, slot, on);
         }
-        match a.as_str() {
-            "--large-results" => s.results_large_font = true,
-            "--no-large-results" => s.results_large_font = false,
-            "--high-contrast-results" => s.results_high_contrast = true,
-            "--no-high-contrast-results" => s.results_high_contrast = false,
-            "--wrap-results" => s.results_word_wrap = true,
-            "--no-wrap-results" => s.results_word_wrap = false,
-            _ => {}
-        }
+    }
+
+    /// `s` as it should be saved: command-line values swapped back for the
+    /// saved ones.
+    pub fn settings_to_save(&self, s: &config::Settings) -> config::Settings {
+        let mut out = s.clone();
+        restore_override(&mut out.font_size, self.font_size);
+        restore_override(&mut out.results_large_font, self.large);
+        restore_override(&mut out.results_high_contrast, self.contrast);
+        restore_override(&mut out.results_word_wrap, self.wrap);
+        out
     }
 }
 
@@ -413,13 +471,15 @@ impl App {
         let langs = LangRegistry::load();
         let themes = ThemeRegistry::load();
         let mut settings = config::load_settings();
-        apply_display_args(&mut settings, &args.raw);
+        let mut cli_display = CliDisplay::default();
+        cli_display.apply(&mut settings, &args.raw);
         let theme_idx = themes.index_of(&settings.theme);
         let globals = themes.themes[theme_idx].globals();
         let mut app = Self {
             profile: std::env::var_os("SUPERFASTNOTEPAD_PROFILE").map(|_| FrameProfile::default()),
             // main() loads this font before the first frame.
             applied_font: settings.font_file.clone(),
+            cli_display,
             font_error: None,
             font_choices: None,
             window_title: String::new(),
@@ -1411,7 +1471,7 @@ impl App {
             config::save_session(&s);
         }
         self.settings.fif_filters.retain(|f| !f.is_empty());
-        config::save_settings(&self.settings);
+        config::save_settings(&self.cli_display.settings_to_save(&self.settings));
         config::save_persisted(&self.persisted);
     }
 
@@ -1595,7 +1655,7 @@ impl App {
     }
 
     pub fn open_args(&mut self, args: &[String]) {
-        apply_display_args(&mut self.settings, args);
+        self.cli_display.apply(&mut self.settings, args);
         let mut line = None;
         let mut last = None;
         let mut it = args.iter();
