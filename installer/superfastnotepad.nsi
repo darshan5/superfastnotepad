@@ -125,7 +125,7 @@ Section "Desktop shortcut" SecDesktop
 SectionEnd
 
 !insertmacro MUI_FUNCTION_DESCRIPTION_BEGIN
-  !insertmacro MUI_DESCRIPTION_TEXT ${SecApp} "The app, superfastnotepad-cli.exe (headless search for scripts), a Start menu shortcut and an $\"Open with$\" entry."
+  !insertmacro MUI_DESCRIPTION_TEXT ${SecApp} "The app, superfastnotepad-cli.exe (command line tools for scripts and AI agents), a Start menu shortcut and an $\"Open with$\" entry."
   !insertmacro MUI_DESCRIPTION_TEXT ${SecPath} "Lets cmd and PowerShell run superfastnotepad and superfastnotepad-cli by name (in windows opened after installing)."
   !insertmacro MUI_DESCRIPTION_TEXT ${SecDesktop} "A shortcut on the desktop."
 !insertmacro MUI_FUNCTION_DESCRIPTION_END

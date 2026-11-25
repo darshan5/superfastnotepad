@@ -148,8 +148,8 @@ jobs:
           body: |
             ## Downloads
 
-            - **macOS (Apple Silicon):** `superfastnotepad-${{ needs.tag.outputs.tag }}-macos-apple-silicon.dmg`. Open it and drag `superfastnotepad.app` to Applications. The headless CLI is inside: `/Applications/superfastnotepad.app/Contents/MacOS/superfastnotepad-cli`.
+            - **macOS (Apple Silicon):** `superfastnotepad-${{ needs.tag.outputs.tag }}-macos-apple-silicon.dmg`. Open it and drag `superfastnotepad.app` to Applications. The command line tools are inside: `/Applications/superfastnotepad.app/Contents/MacOS/superfastnotepad-cli`.
             - **Windows (64-bit) installer:** `superfastnotepad-${{ needs.tag.outputs.tag }}-windows-x64-setup.exe` installs the app and `superfastnotepad-cli.exe` for your user (no admin needed) with a Start menu shortcut, an "Open with" entry, the install folder on your PATH (optional) and an uninstaller. `setup.exe /S` installs silently.
-            - **Windows (64-bit) standalone:** `superfastnotepad-${{ needs.tag.outputs.tag }}-windows-x64.exe` (the app) and `superfastnotepad-cli-${{ needs.tag.outputs.tag }}-windows-x64.exe` (headless search for scripts and AI agents: a console program, so cmd and PowerShell wait for it and get its exit code). Run either as is.
+            - **Windows (64-bit) standalone:** `superfastnotepad-${{ needs.tag.outputs.tag }}-windows-x64.exe` (the app) and `superfastnotepad-cli-${{ needs.tag.outputs.tag }}-windows-x64.exe` (command line tools for scripts and AI agents: search, tail, lines, append, replace, convert, diff, format/validate, CSV/JSON/TSV, Base64/URL, hashes, passwords, time conversion; a console program, so cmd and PowerShell wait for it and get its exit code). Run either as is.
 
             The builds aren't code-signed. On macOS, the first time, right-click the app and choose Open (or run `xattr -dr com.apple.quarantine /Applications/superfastnotepad.app`). On Windows, choose "More info" > "Run anyway" in the SmartScreen prompt.

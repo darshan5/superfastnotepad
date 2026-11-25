@@ -18,7 +18,7 @@ Builds for Windows (64-bit) and macOS (Apple Silicon) are on the
 |---|---|
 | `superfastnotepad-vX.Y.Z-windows-x64-setup.exe` | Windows installer (per user, no admin): the app and `superfastnotepad-cli.exe`, Start menu, "Open with", PATH (optional). `/S` installs silently |
 | `superfastnotepad-vX.Y.Z-windows-x64.exe` | The Windows app on its own |
-| `superfastnotepad-cli-vX.Y.Z-windows-x64.exe` | Headless search on its own, a console program for scripts and AI agents |
+| `superfastnotepad-cli-vX.Y.Z-windows-x64.exe` | The [command line tools](#command-line-tools-for-scripts-and-ai-agents) on their own, a console program for scripts and AI agents |
 | `superfastnotepad-vX.Y.Z-macos-apple-silicon.dmg` | The macOS app; the CLI is `superfastnotepad.app/Contents/MacOS/superfastnotepad-cli` |
 
 ## Build
@@ -65,19 +65,53 @@ For screenshots read by OCR (AI agents driving a remote machine):
 OCR Optimized is black on white with no italics, every text colour at 7:1 contrast or more,
 menus, dialogs and search results in full black, and a solid (not see-through) Find window.
 
-Headless search with `superfastnotepad-cli` (opens no window, prints grep-style
-`path:line: text` and a summary line; exit code 0 = hits, 1 = none, 2 = error;
-`superfastnotepad-cli search --help` lists all options):
+## Command line tools (for scripts and AI agents)
+
+`superfastnotepad-cli` runs headless commands: no window, results on stdout (or in `--out <file>`,
+UTF-8), exit code 0 = done or found, 1 = nothing found / invalid / different (for `diff`: the
+files differ), 2 = error. On **Windows** it's its own console program (`superfastnotepad-cli.exe`,
+installed next to the app). On **macOS** use
+`superfastnotepad.app/Contents/MacOS/superfastnotepad-cli`, or give the app itself the command
+(`superfastnotepad tail app.log`). `superfastnotepad-cli help` lists the commands, and
+`superfastnotepad-cli <command> --help` the options of one.
+
+| Command | What it does |
+|---|---|
+| `search` | Find text or a regex in files: `path:line: text`, `--context`, `--fields` (CSV hits as `column: value`), `--newest`, `--format json` |
+| `tail` / `head` | Last / first lines; `tail --follow` prints new lines, `--until <regex>` stops at a matching line, `--timeout`; `--grep`, `--numbers` |
+| `lines` | A range with line numbers: `lines app.log 120-160`, `120-` (to the end), `-40` (from the start), `--around 1234 --context 10` (around a `search` hit); with no end it prints 50 lines and says which range comes next |
+| `append` / `write` | Add to / create a file from `--text`, `--from <file>` or a pipe, keeping its encoding and line endings; `write` needs `--force` to replace |
+| `replace` | Find and replace in files or a folder (`--dir --glob -r`), `$1` groups, `--dry-run` (unified diff), `--backup` |
+| `info` | Size, date, encoding, line endings (or Mixed), line count, longest line |
+| `convert` | Change encoding (`utf-8`, `utf-8-bom`, `utf-16le`, `utf-16be`, `ansi`) and line endings (`crlf`, `lf`, `cr`) |
+| `diff` | Unified diff of two files; `-i`, `-w` |
+| `files` | Files by `--glob` and date, newest first, with sizes |
+| `format` / `minify` / `validate` | JSON, XML, HTML, CSS, JavaScript/TypeScript, Markdown (pretty print); minify JSON, XML, CSS; validate JSON, XML, CSV, TSV (error with line and column); `--in-place` |
+| `data` | CSV ↔ JSON ↔ TSV |
+| `base64` / `url` / `qp` | `encode` or `decode` (Base64 also for binary files, `--url-safe`) |
+| `hash` | MD5, SHA-1, SHA-256 (default), SHA-512 or `--algo all`; `--check <hex>` |
+| `password` | `--length`, `--count`, `--no-upper/--no-lower/--no-numbers/--no-symbols`, `--symbols "-_."`, `--no-ambiguous`, `--exclude` |
+| `time` | Unix seconds/ms ↔ UTC ↔ local time: `time`, `time 1700000000`, `time "2026-11-25 09:00" --utc` |
+| `uuid` | Random version 4 UUIDs |
 
 ```
-superfastnotepad-cli search --dir C:\logs --glob "export-*.txt" --regex "^46411," --fields --decode-entities --out C:\temp\hits.txt
+superfastnotepad-cli search --dir C:\logs --glob "export-*.txt" --regex "^46411," --fields --out C:\temp\hits.txt
+superfastnotepad-cli lines C:\logs\export-1.txt --around 1234 --context 5
+superfastnotepad-cli tail C:\logs\app.log --follow --until "Export finished" --timeout 600
+superfastnotepad-cli replace --dir C:\app\conf --glob "*.ini" --text "Server=old" --with "Server=new" --dry-run
+superfastnotepad-cli convert C:\temp\out.csv --encoding utf-8 --eol crlf
+superfastnotepad-cli format C:\temp\response.json --out C:\temp\pretty.json
+superfastnotepad-cli time 1764075600
 ```
 
-Options: `--text`/`--regex`, `--ignore-case`, `--glob` (repeatable), `--recursive`, `--newest N`,
-`--modified-since YYYY-MM-DD`, `--context N`, `--max-line-chars N`, `--decode-entities`,
-`--fields` (show a CSV hit as `column: value` rows using the file's header line),
-`--format json`, `--out <file>`. `superfastnotepad search ...` (the app's own program) runs the
-same search, but on Windows it's a GUI program, so use `superfastnotepad-cli` from scripts.
+- Text comes from `--text "..."`, a file argument, or a pipe (`type x.json | superfastnotepad-cli format`).
+  `--escapes` makes `\n`, `\t` and `\\` in `--text` a new line, a tab and a backslash.
+- Commands that change files (`append`, `write`, `replace`, `convert`, `format --in-place`) refuse
+  a file that's open in superfastnotepad with unsaved changes (`--force` overrides), and
+  `--backup` keeps `<file>.bak`.
+- The app's own program takes the same commands (`superfastnotepad tail ...`). To open a file
+  whose name is a command, write `./tail`. On Windows the app is a GUI program, so cmd and
+  PowerShell don't wait for it: use `superfastnotepad-cli` from scripts.
 
 ### For AI agents on Windows (cmd, PowerShell, Run box)
 
@@ -128,7 +162,8 @@ features that aren't built yet, and [TODO.md](TODO.md) for planned compare featu
 ```
 src/
   main.rs           startup, CLI args, font (one system monospace face), single-instance
-  bin/superfastnotepad-cli.rs  console program for headless search (cli_search.rs)
+  cli.rs            headless commands: dispatch, options, input/output (cli_search.rs,
+                    cli_files.rs, cli_tools.rs); bin/superfastnotepad-cli.rs is the console program
   app.rs            state + command dispatch
   ui.rs             menus, toolbar, tab bars, split views, status bar
   editor.rs         the editor widget
@@ -153,5 +188,21 @@ src/
   encoding.rs       encoding detection and conversion
   dialogs.rs panels.rs icons.rs config.rs platform.rs commands.rs
 ```
+
+## Related projects
+
+Other fast native Rust apps by the same author, built the same way for AI agents: each has a
+console `-cli` program for Windows (in the installer and as its own `.exe`), headless commands
+with `--json` output and exit codes, and the same notes for cmd and PowerShell.
+
+- **[OpenViSQL](https://github.com/darshan5/openvisql)**: a desktop SQL client for MySQL, MariaDB,
+  PostgreSQL and SQLite. `openvisql-cli` runs SQL against a saved connection or from flags and
+  prints the results as a table, records, CSV, TSV, JSON or Markdown; saved queries with
+  parameters (`--snippet "Order lines" --param order=1042`); `--read-only`.
+- **[SuperFastImageView](https://github.com/darshan5/superfastimageview)**: an image viewer that
+  puts the first image on screen in about 100 ms, with basic editing and batch conversion.
+  `superfastimageview-cli` gets image `info` (size, format, metadata), and can `convert`,
+  `resize` (e.g. `--max 1568` for a model's vision input), `rotate` (lossless JPEG), `flip`,
+  `strip` metadata and `compress` to a target size, with `--dry-run`.
 
 License: [MIT](LICENSE).

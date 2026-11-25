@@ -3,7 +3,10 @@
 
 mod app;
 mod calltip;
+mod cli;
+mod cli_files;
 mod cli_search;
+mod cli_tools;
 mod colorpick;
 mod commands;
 mod compare;
@@ -77,7 +80,7 @@ fn parse_args() -> (StartupArgs, bool, Vec<String>) {
             "-alwaysOnTop" => a.always_on_top = true,
             "--help" | "-h" => {
                 println!(
-                    "{0} [--help] [-multiInst] [-nosession] [--session-dir <folder>] [-ro] [-alwaysOnTop] [-l<Language>] [-n<line>] [-c<column>] [--font-size <pt>] [--theme <name>] [--large-results] [--high-contrast-results] [--wrap-results] [filePath ...]\n{0} search --help    (headless search; prints results, opens no window)",
+                    "{0} [--help] [-multiInst] [-nosession] [--session-dir <folder>] [-ro] [-alwaysOnTop] [-l<Language>] [-n<line>] [-c<column>] [--font-size <pt>] [--theme <name>] [--large-results] [--high-contrast-results] [--wrap-results] [filePath ...]\n{0} help            (headless commands for scripts: search, tail, replace, format, hash, ...; they open no window)",
                     ui::APP_NAME
                 );
                 let themes = theme::ThemeRegistry::load();
@@ -151,10 +154,11 @@ fn app_icon() -> egui::IconData {
 }
 
 fn main() -> eframe::Result<()> {
-    // Headless search: no settings, session, window or single-instance check.
+    // Headless commands: no settings, session, window or single-instance
+    // check. (To open a file named like a command, write `./tail`.)
     let raw: Vec<String> = std::env::args().skip(1).collect();
-    if raw.first().is_some_and(|a| a == "search") {
-        std::process::exit(cli_search::run(&raw[1..]));
+    if raw.first().is_some_and(|a| cli::is_command(a)) {
+        std::process::exit(cli::run(&raw));
     }
     #[cfg(target_os = "macos")]
     platform::finder::install();

@@ -35,11 +35,25 @@ pub fn generate(length: usize, numbers: bool, symbols: bool) -> Result<String, S
     if symbols {
         sets.push(SYMBOLS);
     }
-    let length = length.clamp(MIN_LENGTH.max(sets.len()), MAX_LENGTH);
-    let all: Vec<char> = sets.iter().flat_map(|s| s.chars()).collect();
+    let sets: Vec<Vec<char>> = sets.iter().map(|s| s.chars().collect()).collect();
+    generate_from(length.clamp(MIN_LENGTH, MAX_LENGTH), &sets)
+}
+
+pub const LOWERCASE: &str = LOWER;
+pub const UPPERCASE: &str = UPPER;
+pub const NUMBERS: &str = DIGITS;
+
+/// A password of `length` characters drawn from `sets`, with at least one
+/// character of each set (so `length` is at least the number of sets).
+pub fn generate_from(length: usize, sets: &[Vec<char>]) -> Result<String, String> {
+    let sets: Vec<&Vec<char>> = sets.iter().filter(|s| !s.is_empty()).collect();
+    if sets.is_empty() {
+        return Err("no characters to choose from".into());
+    }
+    let length = length.max(sets.len());
+    let all: Vec<char> = sets.iter().flat_map(|s| s.iter().copied()).collect();
     let mut out: Vec<char> = Vec::with_capacity(length);
-    for set in &sets {
-        let chars: Vec<char> = set.chars().collect();
+    for chars in &sets {
         out.push(chars[random_below(chars.len())?]);
     }
     while out.len() < length {

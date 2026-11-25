@@ -400,6 +400,11 @@ mod tests {
     use chrono::TimeZone;
 
     #[test]
+    fn cli_finds_the_same_settings_folder() {
+        assert_eq!(crate::cli::app_config_dir(), config_dir());
+    }
+
+    #[test]
     fn date_format_conversion() {
         let t = chrono::Local.with_ymd_and_hms(2026, 3, 4, 5, 6, 7).unwrap();
         assert_eq!(format_date("yyyy-MM-dd HH:mm:ss", t), "2026-03-04 05:06:07");

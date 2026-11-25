@@ -1,6 +1,6 @@
 [package]
 name = "superfastnotepad"
-version = "0.3.5"
+version = "0.3.6"
 edition = "2024"
 license = "MIT"
 description = "A fast text editor written in pure Rust (Windows + macOS)"
@@ -13,6 +13,8 @@ path = "src/main.rs"
 [[bin]]
 name = "superfastnotepad-cli"
 path = "src/bin/superfastnotepad-cli.rs"
+# Its modules are tested in the app's binary.
+test = false
 
 [dependencies]
 # `clipboard` connects copy and paste to the system clipboard.

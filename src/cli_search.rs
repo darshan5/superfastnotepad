@@ -109,7 +109,7 @@ fn parse(args: &[String]) -> Result<Opts, String> {
 }
 
 /// Local midnight at the start of `YYYY-MM-DD`.
-fn parse_date(s: &str) -> Result<SystemTime, String> {
+pub fn parse_date(s: &str) -> Result<SystemTime, String> {
     use chrono::TimeZone as _;
     let d = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
         .map_err(|_| format!("--modified-since: expected YYYY-MM-DD, got {s}"))?;
@@ -140,42 +140,73 @@ struct Outcome {
     searched: usize,
 }
 
-/// Files under `o.dir` that pass the name, date and `--newest` filters.
-fn candidate_files(o: &Opts) -> Result<Vec<PathBuf>, String> {
-    if !o.dir.is_dir() {
-        return Err(format!("not a folder: {}", o.dir.display()));
+/// Which files a command works on.
+pub struct FileFilter<'a> {
+    pub dir: &'a Path,
+    pub globs: &'a [String],
+    pub recursive: bool,
+    pub newest: Option<usize>,
+    pub modified_since: Option<SystemTime>,
+    /// Never include this file (the results file).
+    pub skip: Option<&'a Path>,
+}
+
+/// A listed file: path, modified time, size in bytes.
+pub type Listed = (PathBuf, SystemTime, u64);
+
+/// Files under `f.dir` that pass the name, date and `--newest` filters,
+/// newest first when `--newest` is given, else sorted by path.
+pub fn list_files(f: &FileFilter) -> Result<Vec<Listed>, String> {
+    if !f.dir.is_dir() {
+        return Err(format!("not a folder: {}", f.dir.display()));
     }
-    let mut files: Vec<(PathBuf, SystemTime)> = Vec::new();
-    // Never search the results file itself.
-    let out = o.out.as_ref().and_then(|p| p.canonicalize().ok());
-    let walker = walkdir::WalkDir::new(&o.dir).max_depth(if o.recursive { usize::MAX } else { 1 });
+    let mut files: Vec<Listed> = Vec::new();
+    let out = f.skip.and_then(|p| p.canonicalize().ok());
+    let walker = walkdir::WalkDir::new(f.dir).max_depth(if f.recursive { usize::MAX } else { 1 });
     for entry in walker.into_iter().filter_map(Result::ok) {
         if !entry.file_type().is_file() {
             continue;
         }
         let name = entry.file_name().to_string_lossy();
-        if !o.globs.is_empty() && !o.globs.iter().any(|g| search::glob_match(g, &name)) {
+        if !f.globs.is_empty() && !f.globs.iter().any(|g| search::glob_match(g, &name)) {
             continue;
         }
-        let mtime = entry
-            .metadata()
-            .ok()
+        let meta = entry.metadata().ok();
+        let mtime = meta
+            .as_ref()
             .and_then(|m| m.modified().ok())
             .unwrap_or(SystemTime::UNIX_EPOCH);
-        if o.modified_since.is_some_and(|since| mtime < since) {
+        if f.modified_since.is_some_and(|since| mtime < since) {
             continue;
         }
         if out.is_some() && entry.path().canonicalize().ok() == out {
             continue;
         }
-        files.push((entry.into_path(), mtime));
+        let size = meta.map_or(0, |m| m.len());
+        files.push((entry.into_path(), mtime, size));
     }
-    if let Some(n) = o.newest {
+    if let Some(n) = f.newest {
         files.sort_by_key(|f| std::cmp::Reverse(f.1));
         files.truncate(n);
+    } else {
+        files.sort_by(|a, b| a.0.cmp(&b.0));
     }
+    Ok(files)
+}
+
+/// Files under `o.dir` that pass the name, date and `--newest` filters.
+fn candidate_files(o: &Opts) -> Result<Vec<PathBuf>, String> {
+    let mut files = list_files(&FileFilter {
+        dir: &o.dir,
+        globs: &o.globs,
+        recursive: o.recursive,
+        newest: o.newest,
+        modified_since: o.modified_since,
+        // Never search the results file itself.
+        skip: o.out.as_deref(),
+    })?;
     files.sort_by(|a, b| a.0.cmp(&b.0));
-    Ok(files.into_iter().map(|(p, _)| p).collect())
+    Ok(files.into_iter().map(|(p, _, _)| p).collect())
 }
 
 fn search(o: &Opts) -> Result<Outcome, String> {
@@ -259,7 +290,7 @@ fn search(o: &Opts) -> Result<Outcome, String> {
     Ok(out)
 }
 
-fn path_for_output(p: &Path) -> String {
+pub fn path_for_output(p: &Path) -> String {
     let s = p.display().to_string();
     s.strip_prefix("./")
         .or_else(|| s.strip_prefix(".\\"))
@@ -268,7 +299,7 @@ fn path_for_output(p: &Path) -> String {
 }
 
 /// `s` cut to `max` characters (0 = no limit), marked with `…`.
-fn cut(s: &str, max: usize) -> String {
+pub fn cut(s: &str, max: usize) -> String {
     match s.char_indices().nth(max) {
         Some((i, _)) if max > 0 => format!("{}…", &s[..i]),
         _ => s.to_string(),
@@ -344,27 +375,9 @@ fn render_json(r: &Outcome) -> String {
     s
 }
 
-/// A release Windows build has no console of its own: borrow the parent's
-/// (the cmd window it was started from) unless stdout is already redirected.
-#[cfg(windows)]
-fn attach_console() {
-    use windows_sys::Win32::System::Console::{
-        ATTACH_PARENT_PROCESS, AttachConsole, GetStdHandle, STD_OUTPUT_HANDLE,
-    };
-    // SAFETY: plain Win32 calls with constant arguments.
-    unsafe {
-        let h = GetStdHandle(STD_OUTPUT_HANDLE);
-        if h.is_null() || h == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
-            AttachConsole(ATTACH_PARENT_PROCESS);
-        }
-    }
-}
-
 /// Runs `search` with the arguments after the word `search`; returns the
 /// process exit code.
 pub fn run(args: &[String]) -> i32 {
-    #[cfg(windows)]
-    attach_console();
     if args.iter().any(|a| a == "--help" || a == "-h") {
         println!("{USAGE}");
         return 0;
